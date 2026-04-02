@@ -1,0 +1,513 @@
+﻿#include "raylib.h"
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <cstdlib>
+#include <cmath>
+
+// --- CONFIGURACIÓN ---
+const int MAP_WIDTH = 60;
+const int MAP_HEIGHT = 60;
+
+enum TileType { SUELO, PARED, PORTAL };
+
+struct Tile {
+    TileType tipo;
+    Color color;
+    int destinoSala;
+    int alturaPixels; // altura en píxeles para renderizar paredes/obstaculos
+};
+
+// Estructura para el sistema de Z-sorting
+struct EntidadDibujable {
+    Vector2 posPantalla;
+    float profundidad; // Aquí guardaremos x + y
+    int tipo;          // 0 = TileBase, 1 = Jugador, 2 = TileTop
+    Tile tileData;     // Solo si es tipo 0
+};
+
+// --- FUNCIONES DE APOYO ---
+
+static Vector2 ConvertirAIsometrico(float x, float y) {
+    // 32 y 16 definen el ratio 2:1 clásico de los tiles isométricos
+    return { (x - y) * 32.0f, (x + y) * 16.0f };
+}
+
+// Forward declarations for helper functions used in aggressive simplification
+static void EnforceMinWidth(std::vector<Tile>& map, int minWidth);
+static void CleanMapOrthogonal(std::vector<Tile>& map);
+static void RemoveSmallIslands(std::vector<Tile>& map, int minFloorSize, int minWallSize);
+
+// Remove floor dead-ends: floor tiles with 0 or 1 orthogonal floor neighbors
+static void PruneDeadEnds(std::vector<Tile>& map, int iterations = 3) {
+    for (int it = 0; it < iterations; ++it) {
+        std::vector<std::pair<int,int>> toRemove;
+        for (int y = 1; y < MAP_HEIGHT-1; ++y) {
+            for (int x = 1; x < MAP_WIDTH-1; ++x) {
+                if (map[x+y*MAP_WIDTH].tipo != SUELO) continue;
+                int orth = 0;
+                if (map[(x-1)+y*MAP_WIDTH].tipo == SUELO) orth++;
+                if (map[(x+1)+y*MAP_WIDTH].tipo == SUELO) orth++;
+                if (map[x+(y-1)*MAP_WIDTH].tipo == SUELO) orth++;
+                if (map[x+(y+1)*MAP_WIDTH].tipo == SUELO) orth++;
+                if (orth <= 1) toRemove.emplace_back(x,y);
+            }
+        }
+        if (toRemove.empty()) break;
+        for (auto &p : toRemove) map[p.first + p.second * MAP_WIDTH] = { PARED, GRAY, -1, 40 };
+    }
+}
+
+static void SimplifyMapAggressive(std::vector<Tile>& map) {
+    // multiple passes to simplify geometry
+    EnforceMinWidth(map, 2);
+    EnforceMinWidth(map, 2);
+    CleanMapOrthogonal(map);
+    PruneDeadEnds(map, 4);
+    RemoveSmallIslands(map, 12, 10);
+    CleanMapOrthogonal(map);
+}
+
+// Find nearest floor tile to (sx,sy). Returns true and sets out if found.
+static bool FindNearestFloor(const std::vector<Tile>& map, int sx, int sy, int& outX, int& outY) {
+    if (sx < 0) sx = 0; if (sy < 0) sy = 0;
+    std::vector<char> vis(MAP_WIDTH * MAP_HEIGHT, 0);
+    std::vector<int> qx, qy;
+    qx.reserve(MAP_WIDTH*MAP_HEIGHT); qy.reserve(MAP_WIDTH*MAP_HEIGHT);
+    qx.push_back(sx); qy.push_back(sy); vis[sx+sy*MAP_WIDTH]=1;
+    for (size_t i=0;i<qx.size();++i) {
+        int x=qx[i], y=qy[i];
+        if (map[x+y*MAP_WIDTH].tipo == SUELO) { outX = x; outY = y; return true; }
+        const int dx[4]={-1,1,0,0}, dy[4]={0,0,-1,1};
+        for (int k=0;k<4;++k) {
+            int nx=x+dx[k], ny=y+dy[k];
+            if (nx<=0||nx>=MAP_WIDTH-1||ny<=0||ny>=MAP_HEIGHT-1) continue;
+            int idx = nx + ny*MAP_WIDTH;
+            if (!vis[idx]) { vis[idx]=1; qx.push_back(nx); qy.push_back(ny); }
+        }
+    }
+    return false;
+}
+
+// Ensure spawn area is clear floor (3x3) and not portal/wall
+static void EnsureSpawnFree(std::vector<Tile>& map, int sx, int sy) {
+    for (int oy=-1; oy<=1; ++oy) for (int ox=-1; ox<=1; ++ox) {
+        int nx = sx + ox, ny = sy + oy;
+        if (nx>0 && nx<MAP_WIDTH-1 && ny>0 && ny<MAP_HEIGHT-1) {
+            map[nx+ny*MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+        }
+    }
+}
+
+// Remove all portals from a map
+static void RemoveAllPortals(std::vector<Tile>& map) {
+    for (int y=0;y<MAP_HEIGHT;++y) for (int x=0;x<MAP_WIDTH;++x) if (map[x+y*MAP_WIDTH].tipo==PORTAL) map[x+y*MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+}
+
+// Ensure minimum structure width by dilating floor orthogonally one tile
+static void EnforceMinWidth(std::vector<Tile>& map, int minWidth = 2) {
+    if (minWidth <= 1) return;
+    auto copy = map;
+    for (int y = 1; y < MAP_HEIGHT-1; ++y) {
+        for (int x = 1; x < MAP_WIDTH-1; ++x) {
+            if (copy[x + y * MAP_WIDTH].tipo == SUELO) {
+                // set orthogonal neighbors to floor
+                if (x-1 > 0) map[(x-1) + y * MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+                if (x+1 < MAP_WIDTH-1) map[(x+1) + y * MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+                if (y-1 > 0) map[x + (y-1) * MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+                if (y+1 < MAP_HEIGHT-1) map[x + (y+1) * MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+            }
+        }
+    }
+}
+
+// --- Cinco variantes de generador (complejas / laberínticas) ---
+static inline int RandRange(int a, int b) { return a + (std::rand() % (b - a + 1)); }
+
+void Gen_Digger(std::vector<Tile>& map) {
+    map.assign(MAP_WIDTH * MAP_HEIGHT, { PARED, GRAY, -1, 0 });
+    int x = MAP_WIDTH/2, y = MAP_HEIGHT/2;
+    for (int i=0;i<1600;i++){
+        map[x+y*MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+        if (RandRange(0,1000) < 30) { int rw=RandRange(4,10), rh=RandRange(4,10); for(int yy=y-rh/2; yy<y-rh/2+rh; ++yy) for(int xx=x-rw/2; xx<x-rw/2+rw; ++xx) if(xx>0&&xx<MAP_WIDTH-1&&yy>0&&yy<MAP_HEIGHT-1) map[xx+yy*MAP_WIDTH]={SUELO,LIGHTGRAY,-1,0}; }
+        int d = RandRange(0,3); if (d==0 && x>1) x--; else if (d==1 && x<MAP_WIDTH-2) x++; else if (d==2 && y>1) y--; else if (d==3 && y<MAP_HEIGHT-2) y++;
+    }
+    // widen
+    std::vector<int> to; for(int yy=1;yy<MAP_HEIGHT-1;++yy) for(int xx=1;xx<MAP_WIDTH-1;++xx) if(map[xx+yy*MAP_WIDTH].tipo==SUELO) for(int k=0;k<4;k++){int nx=xx + (k==0?-1:(k==1?1:0)); int ny=yy + (k==2?-1:(k==3?1:0)); if(map[nx+ny*MAP_WIDTH].tipo==PARED && RandRange(0,100)<40) to.push_back(nx+ny*MAP_WIDTH);} for(int idx:to) map[idx]={SUELO,LIGHTGRAY,-1,0};
+    // portal
+    for(int yy=1; yy<MAP_HEIGHT-1; ++yy) if(map[(MAP_WIDTH-2)+yy*MAP_WIDTH].tipo==SUELO){ map[(MAP_WIDTH-1)+yy*MAP_WIDTH]={PORTAL,BLUE,1,0}; return;} map[(MAP_WIDTH-1)+(MAP_HEIGHT/2)*MAP_WIDTH]={PORTAL,BLUE,1,0};
+}
+
+void Gen_Cellular(std::vector<Tile>& map){ map.assign(MAP_WIDTH*MAP_HEIGHT,{PARED,GRAY,-1,0}); for(int y=1;y<MAP_HEIGHT-1;y++) for(int x=1;x<MAP_WIDTH-1;x++) map[x+y*MAP_WIDTH].tipo = (RandRange(0,100)<46)?SUELO:PARED; for(int it=0;it<5;++it){ auto tmp=map; for(int y=1;y<MAP_HEIGHT-1;y++) for(int x=1;x<MAP_WIDTH-1;x++){ int floors=0; for(int oy=-1;oy<=1;++oy) for(int ox=-1;ox<=1;++ox) if(!(ox==0&&oy==0)) if(map[(x+ox)+(y+oy)*MAP_WIDTH].tipo==SUELO) floors++; tmp[x+y*MAP_WIDTH].tipo = (floors>=5)?SUELO:PARED;} map.swap(tmp);} for(int yy=0;yy<MAP_HEIGHT;++yy){ map[0+yy*MAP_WIDTH]={PARED,GRAY,-1,40}; map[(MAP_WIDTH-1)+yy*MAP_WIDTH]={PARED,GRAY,-1,40}; } for(int xx=0;xx<MAP_WIDTH;++xx){ map[xx+0*MAP_WIDTH]={PARED,GRAY,-1,40}; map[xx+(MAP_HEIGHT-1)*MAP_WIDTH]={PARED,GRAY,-1,40}; } for(int yy=1;yy<MAP_HEIGHT-1;++yy) if(map[(MAP_WIDTH-2)+yy*MAP_WIDTH].tipo==SUELO){ map[(MAP_WIDTH-1)+yy*MAP_WIDTH]={PORTAL,BLUE,1,0}; return;} map[(MAP_WIDTH-1)+(MAP_HEIGHT/2)*MAP_WIDTH]={PORTAL,BLUE,1,0}; }
+
+void Gen_DFSMaze(std::vector<Tile>& map){ map.assign(MAP_WIDTH*MAP_HEIGHT,{PARED,GRAY,-1,40}); std::vector<std::pair<int,int>> stack; int sx=1, sy=1; map[sx+sy*MAP_WIDTH].tipo=SUELO; stack.push_back({sx,sy}); const int dirs[4][2]={{2,0},{-2,0},{0,2},{0,-2}}; while(!stack.empty()){ auto cur=stack.back(); int x=cur.first,y=cur.second; std::vector<int> n; for(int i=0;i<4;i++){int nx=x+dirs[i][0], ny=y+dirs[i][1]; if(nx>0 && nx<MAP_WIDTH-1 && ny>0 && ny<MAP_HEIGHT-1 && map[nx+ny*MAP_WIDTH].tipo==PARED) n.push_back(i);} if(n.empty()){ stack.pop_back(); continue;} int choice = n[RandRange(0,(int)n.size()-1)]; int nx=x+dirs[choice][0], ny=y+dirs[choice][1]; map[(x+dirs[choice][0]/2)+(y+dirs[choice][1]/2)*MAP_WIDTH]={SUELO,LIGHTGRAY,-1,0}; map[nx+ny*MAP_WIDTH]={SUELO,LIGHTGRAY,-1,0}; stack.push_back({nx,ny}); } for(int yy=1; yy<MAP_HEIGHT-1; ++yy) if(map[(MAP_WIDTH-2)+yy*MAP_WIDTH].tipo==SUELO){ map[(MAP_WIDTH-1)+yy*MAP_WIDTH]={PORTAL,BLUE,1,0}; return;} map[(MAP_WIDTH-1)+(MAP_HEIGHT/2)*MAP_WIDTH]={PORTAL,BLUE,1,0}; }
+
+void Gen_Rooms(std::vector<Tile>& map) {
+    map.assign(MAP_WIDTH*MAP_HEIGHT, { PARED, GRAY, -1, 40 });
+    struct R { int x, y, w, h; };
+    std::vector<R> rooms;
+    int attempts = 0;
+    while (rooms.size() < 10 && attempts++ < 300) {
+        int w = RandRange(4, 12), h = RandRange(4, 10), x = RandRange(1, MAP_WIDTH - w - 1), y = RandRange(1, MAP_HEIGHT - h - 1);
+        bool ok = true;
+        for (auto &r : rooms) {
+            if (!(x + w + 1 < r.x || r.x + r.w + 1 < x || y + h + 1 < r.y || r.y + r.h + 1 < y)) { ok = false; break; }
+        }
+        if (!ok) continue;
+        rooms.push_back({ x, y, w, h });
+        for (int yy = y; yy < y + h; ++yy) {
+            for (int xx = x; xx < x + w; ++xx) {
+                size_t idx = static_cast<size_t>(xx) + static_cast<size_t>(yy) * static_cast<size_t>(MAP_WIDTH);
+                map[idx] = { SUELO, LIGHTGRAY, -1, 0 };
+            }
+        }
+    }
+
+    auto centro = [&](R &r) { return std::pair<int,int>(r.x + r.w / 2, r.y + r.h / 2); };
+
+    for (size_t i = 1; i < rooms.size(); ++i) {
+        auto a = centro(rooms[i-1]), b = centro(rooms[i]);
+        for (int xx = std::min(a.first, b.first); xx <= std::max(a.first, b.first); ++xx) {
+            size_t idx = static_cast<size_t>(xx) + static_cast<size_t>(a.second) * static_cast<size_t>(MAP_WIDTH);
+            map[idx] = { SUELO, LIGHTGRAY, -1, 0 };
+        }
+        for (int yy = std::min(a.second, b.second); yy <= std::max(a.second, b.second); ++yy) {
+            size_t idx = static_cast<size_t>(b.first) + static_cast<size_t>(yy) * static_cast<size_t>(MAP_WIDTH);
+            map[idx] = { SUELO, LIGHTGRAY, -1, 0 };
+        }
+    }
+
+    if (!rooms.empty()) {
+        auto last = centro(rooms.back());
+        for (int x = last.first; x < MAP_WIDTH - 1; ++x) {
+            size_t idx = static_cast<size_t>(x) + static_cast<size_t>(last.second) * static_cast<size_t>(MAP_WIDTH);
+            map[idx] = { SUELO, LIGHTGRAY, -1, 0 };
+        }
+        size_t portalIdx = static_cast<size_t>(MAP_WIDTH - 1) + static_cast<size_t>(last.second) * static_cast<size_t>(MAP_WIDTH);
+        map[portalIdx] = { PORTAL, BLUE, 1, 0 };
+    } else {
+        size_t fallbackIdx = static_cast<size_t>(MAP_WIDTH - 1) + static_cast<size_t>(MAP_HEIGHT / 2) * static_cast<size_t>(MAP_WIDTH);
+        map[fallbackIdx] = { PORTAL, BLUE, 1, 0 };
+    }
+}
+
+void Gen_Prims(std::vector<Tile>& map){ map.assign(MAP_WIDTH*MAP_HEIGHT,{PARED,GRAY,-1,40}); std::vector<std::pair<int,int>> walls; int sx=1, sy=1; map[sx+sy*MAP_WIDTH]={SUELO,LIGHTGRAY,-1,0}; const int dxs[4]={2,-2,0,0}, dys[4]={0,0,2,-2}; for(int i=0;i<4;i++){int nx=sx+dxs[i], ny=sy+dys[i]; if(nx>0 && nx<MAP_WIDTH-1 && ny>0 && ny<MAP_HEIGHT-1) walls.push_back({nx,ny}); } while(!walls.empty()){ int idx = RandRange(0,(int)walls.size()-1); auto w = walls[idx]; walls.erase(walls.begin()+idx); int x=w.first,y=w.second; std::vector<std::pair<int,int>> adj; for(int i=0;i<4;i++){ int nx=x+dxs[i], ny=y+dys[i]; if(nx>0 && nx<MAP_WIDTH-1 && ny>0 && ny<MAP_HEIGHT-1 && map[nx+ny*MAP_WIDTH].tipo==SUELO) adj.push_back({nx,ny}); } if(adj.size()==1){ map[x+y*MAP_WIDTH]={SUELO,LIGHTGRAY,-1,0}; int ax=adj[0].first, ay=adj[0].second; map[(x+ax)/2 + ((y+ay)/2)*MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 }; for(int i=0;i<4;i++){ int nx=x+dxs[i], ny=y+dys[i]; if(nx>0 && nx<MAP_WIDTH-1 && ny>0 && ny<MAP_HEIGHT-1 && map[nx+ny*MAP_WIDTH].tipo==PARED) walls.push_back({nx,ny}); } } } for(int yy=1; yy<MAP_HEIGHT-1; ++yy) if(map[(MAP_WIDTH-2)+yy*MAP_WIDTH].tipo==SUELO){ map[(MAP_WIDTH-1)+yy*MAP_WIDTH]={PORTAL,BLUE,1,0}; return; } map[(MAP_WIDTH-1)+(MAP_HEIGHT/2)*MAP_WIDTH]={PORTAL,BLUE,1,0}; }
+
+// Cleaning utilities: remove diagonal connections and small noise
+static void CleanMapOrthogonal(std::vector<Tile>& map) {
+    // Remove isolated diagonal floors (no orthogonal neighbors)
+    for (int y = 1; y < MAP_HEIGHT-1; ++y) {
+        for (int x = 1; x < MAP_WIDTH-1; ++x) {
+            if (map[x + y * MAP_WIDTH].tipo != SUELO) continue;
+            int orth = 0;
+            if (map[(x-1) + y * MAP_WIDTH].tipo == SUELO) orth++;
+            if (map[(x+1) + y * MAP_WIDTH].tipo == SUELO) orth++;
+            if (map[x + (y-1) * MAP_WIDTH].tipo == SUELO) orth++;
+            if (map[x + (y+1) * MAP_WIDTH].tipo == SUELO) orth++;
+            if (orth == 0) map[x + y * MAP_WIDTH].tipo = PARED;
+        }
+    }
+
+    // Break diagonal-only 2x2 patterns to enforce right angles
+    for (int y = 1; y < MAP_HEIGHT-1; ++y) {
+        for (int x = 1; x < MAP_WIDTH-1; ++x) {
+            bool a = map[x + y * MAP_WIDTH].tipo == SUELO;
+            bool b = map[(x+1) + y * MAP_WIDTH].tipo == SUELO;
+            bool c = map[x + (y+1) * MAP_WIDTH].tipo == SUELO;
+            bool d = map[(x+1) + (y+1) * MAP_WIDTH].tipo == SUELO;
+            if (a && d && !b && !c) map[(x+1) + (y+1) * MAP_WIDTH].tipo = PARED;
+            if (b && c && !a && !d) map[x + (y+1) * MAP_WIDTH].tipo = PARED;
+        }
+    }
+}
+
+// Remove small connected components to simplify map
+static void RemoveSmallIslands(std::vector<Tile>& map, int minFloorSize = 6, int minWallSize = 6) {
+    std::vector<char> vis(MAP_WIDTH * MAP_HEIGHT, 0);
+    std::vector<int> stack;
+    // Floors
+    for (int y = 1; y < MAP_HEIGHT-1; ++y) for (int x = 1; x < MAP_WIDTH-1; ++x) {
+        int idx = x + y * MAP_WIDTH;
+        if (vis[idx]) continue;
+        if (map[idx].tipo != SUELO) continue;
+        stack.clear(); stack.push_back(idx); vis[idx]=1;
+        for (size_t i=0;i<stack.size();++i) {
+            int cur = stack[i]; int cx = cur % MAP_WIDTH, cy = cur / MAP_WIDTH;
+            const int dx[4] = {-1,1,0,0}; const int dy[4] = {0,0,-1,1};
+            for (int k=0;k<4;++k) {
+                int nx=cx+dx[k], ny=cy+dy[k]; int nidx = nx + ny*MAP_WIDTH;
+                if (nx<=0||nx>=MAP_WIDTH-1||ny<=0||ny>=MAP_HEIGHT-1) continue;
+                if (!vis[nidx] && map[nidx].tipo==SUELO) { vis[nidx]=1; stack.push_back(nidx); }
+            }
+        }
+        if ((int)stack.size() < minFloorSize) for (int v : stack) map[v] = { PARED, GRAY, -1, 40 };
+    }
+    // Walls
+    std::fill(vis.begin(), vis.end(), 0);
+    for (int y = 1; y < MAP_HEIGHT-1; ++y) for (int x = 1; x < MAP_WIDTH-1; ++x) {
+        int idx = x + y * MAP_WIDTH;
+        if (vis[idx]) continue;
+        if (map[idx].tipo != PARED) continue;
+        stack.clear(); stack.push_back(idx); vis[idx]=1;
+        for (size_t i=0;i<stack.size();++i) {
+            int cur = stack[i]; int cx = cur % MAP_WIDTH, cy = cur / MAP_WIDTH;
+            const int dx[4] = {-1,1,0,0}; const int dy[4] = {0,0,-1,1};
+            for (int k=0;k<4;++k) {
+                int nx=cx+dx[k], ny=cy+dy[k]; int nidx = nx + ny*MAP_WIDTH;
+                if (nx<=0||nx>=MAP_WIDTH-1||ny<=0||ny>=MAP_HEIGHT-1) continue;
+                if (!vis[nidx] && map[nidx].tipo==PARED) { vis[nidx]=1; stack.push_back(nidx); }
+            }
+        }
+        if ((int)stack.size() < minWallSize) for (int v : stack) map[v] = { SUELO, LIGHTGRAY, -1, 0 };
+    }
+}
+
+// Keep only one portal in the map; if forceAtCoords is true, place it at (keepX,keepY)
+static void EnsureSinglePortal(std::vector<Tile>& map, bool forceAtCoords, int keepX, int keepY, int destinoSala) {
+    for (int y=0;y<MAP_HEIGHT;++y) for (int x=0;x<MAP_WIDTH;++x) if (map[x+y*MAP_WIDTH].tipo==PORTAL) map[x+y*MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+    if (forceAtCoords) {
+        if (keepX>=0 && keepX<MAP_WIDTH && keepY>=0 && keepY<MAP_HEIGHT) map[keepX+keepY*MAP_WIDTH] = { PORTAL, BLUE, destinoSala, 0 };
+    } else {
+        for (int yy = MAP_HEIGHT/2 - 2; yy <= MAP_HEIGHT/2 + 2; ++yy) for (int xx = MAP_WIDTH-2; xx >= 1; --xx) if (map[xx+yy*MAP_WIDTH].tipo==SUELO) { map[xx+yy*MAP_WIDTH] = { PORTAL, BLUE, destinoSala, 0 }; return; }
+        map[(MAP_WIDTH/2) + (MAP_HEIGHT/2)*MAP_WIDTH] = { PORTAL, BLUE, destinoSala, 0 };
+    }
+}
+
+// Elige una variante (determinística) usando una semilla y genera la sala 0
+void GenerarSalaConSemilla(std::vector<Tile>& outMap, unsigned int seed) {
+    std::srand((unsigned int)seed);
+    int choice = std::rand() % 5; // 0..4
+    // reseed per-variant for internal randomness
+    std::srand((unsigned int)(seed ^ (choice * 7919)));
+    switch(choice) {
+        case 0: Gen_Digger(outMap); break;
+        case 1: Gen_Cellular(outMap); break;
+        case 2: Gen_DFSMaze(outMap); break;
+        case 3: Gen_Rooms(outMap); break;
+        default: Gen_Prims(outMap); break;
+    }
+}
+
+// Predefined master seed used to select one of five map generators deterministically
+static const unsigned int MASTER_SEED = 123456789u;
+
+// Wrapper: genera sala 0 eligiendo una de cinco variantes con semilla fija
+void GenerarSala(std::vector<Tile>& outMap, int salaID) {
+    if (salaID == 0) {
+        // Use MASTER_SEED so choice is deterministic across runs
+        std::srand((unsigned int)MASTER_SEED);
+        int choice = std::rand() % 5; // 5 variants
+        // reseed variant to diversify internal randomness deterministically
+        std::srand((unsigned int)(MASTER_SEED ^ (choice * 7919)));
+        switch (choice) {
+            case 0: Gen_Digger(outMap); break;
+            case 1: Gen_Cellular(outMap); break;
+            case 2: Gen_DFSMaze(outMap); break;
+            case 3: Gen_Rooms(outMap); break;
+            default: Gen_Prims(outMap); break;
+        }
+        return;
+    }
+
+    // Sala no-spawn: simple room with borders and portal on left
+    outMap.assign(MAP_WIDTH * MAP_HEIGHT, { SUELO, LIGHTGRAY, -1, 0 });
+    for (int y = 0; y < MAP_HEIGHT; y++) for (int x = 0; x < MAP_WIDTH; x++) if (x==0||x==MAP_WIDTH-1||y==0||y==MAP_HEIGHT-1) outMap[x + y * MAP_WIDTH] = { PARED, GRAY, -1, 40 };
+    outMap[0 + (MAP_HEIGHT / 2) * MAP_WIDTH] = { PORTAL, BLUE, 0, 0 };
+}
+
+int main() {
+    // Ajuste de ventana para monitor estándar
+    const int anchoP = 1768;
+    const int altoP = 992;
+    InitWindow(anchoP, altoP, "RPG Isometrico - Mapa 60x60");
+    SetTargetFPS(60);
+
+    // Inicialización de Salas
+    int currentRoom = 0;
+    std::vector<std::vector<Tile>> rooms(2);
+    GenerarSala(rooms[0], 0);
+    GenerarSala(rooms[1], 1);
+
+    // Simplify and clean both maps: enforce minimum width, remove noise and diagonals
+    // Aggressive simplification
+    SimplifyMapAggressive(rooms[0]);
+    EnsureSinglePortal(rooms[0], false, 0, 0, 1); // ensure single portal to room 1
+
+    SimplifyMapAggressive(rooms[1]);
+    EnsureSinglePortal(rooms[1], false, 0, 0, 0); // only one TP in second room back to room 0
+
+    // Estado Jugador: find clean spawn positions and ensure spawn areas are free
+    Vector2 spawnSala0 = { 5.0f, 5.0f };
+    Vector2 spawnSala1 = { 55.0f, 30.0f };
+    int sx = 0, sy = 0;
+    if (FindNearestFloor(rooms[0], MAP_WIDTH/2, MAP_HEIGHT/2, sx, sy)) {
+        EnsureSpawnFree(rooms[0], sx, sy);
+        spawnSala0 = { (float)sx, (float)sy };
+    } else {
+        // fallback center
+        spawnSala0 = { (float)(MAP_WIDTH/2), (float)(MAP_HEIGHT/2) };
+        EnsureSpawnFree(rooms[0], MAP_WIDTH/2, MAP_HEIGHT/2);
+    }
+    // For room1, find portal and set spawn near it (so returning is safe)
+    int ppx=-1, ppy=-1;
+    for (int y=0;y<MAP_HEIGHT;++y) for (int x=0;x<MAP_WIDTH;++x) if (rooms[1][x+y*MAP_WIDTH].tipo==PORTAL) { ppx=x; ppy=y; break; }
+    if (ppx!=-1 && FindNearestFloor(rooms[1], ppx, ppy, sx, sy)) {
+        EnsureSpawnFree(rooms[1], sx, sy);
+        spawnSala1 = { (float)sx, (float)sy };
+    } else {
+        // fallback right center
+        spawnSala1 = { (float)(MAP_WIDTH-3), (float)(MAP_HEIGHT/2) };
+        EnsureSpawnFree(rooms[1], (int)spawnSala1.x, (int)spawnSala1.y);
+    }
+
+    Vector2 posJugador = spawnSala0;
+    
+    // Slightly reduced movement speed
+    float velocidadBase = 0.10f;
+    float dashCD = 0.0f;
+    float dashTimer = 0.0f;
+    const float dashMult = 4.5f;
+
+    // Cámara inicializada en el punto de spawn (en coordenadas isométricas)
+    Vector2 cameraPos = ConvertirAIsometrico(posJugador.x, posJugador.y);
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+        std::vector<Tile>& mapa = rooms[currentRoom];
+
+        // Gestión de Timers
+        if (dashCD > 0) dashCD -= dt;
+        if (dashTimer > 0) dashTimer -= dt;
+
+        // --- ENTRADA Y MOVIMIENTO ---
+        Vector2 input = { 0, 0 };
+        if (IsKeyDown(KEY_RIGHT)) input.x += 1;
+        if (IsKeyDown(KEY_LEFT))  input.x -= 1;
+        if (IsKeyDown(KEY_UP))    input.y -= 1;
+        if (IsKeyDown(KEY_DOWN))  input.y += 1;
+
+        // Activar Dash
+        if (IsKeyPressed(KEY_LEFT_SHIFT) && dashCD <= 0 && (input.x != 0 || input.y != 0)) {
+            dashTimer = 0.18f; // Duración breve del impulso
+            dashCD = 0.90f;    // Cooldown reducido en 0.05 adicional
+        }
+
+        if (input.x != 0 || input.y != 0) {
+            // Dirección relativa a los ejes del mapa (ajustada para isometría)
+            Vector2 dirM = { (16.0f * input.x + 32.0f * input.y) / 1024.0f, 
+                             (-16.0f * input.x + 32.0f * input.y) / 1024.0f };
+            
+            float mag = sqrtf(dirM.x * dirM.x + dirM.y * dirM.y);
+            float speed = (dashTimer > 0) ? velocidadBase * dashMult : velocidadBase;
+            
+            Vector2 nextPos = { posJugador.x + (dirM.x / mag) * speed, 
+                                posJugador.y + (dirM.y / mag) * speed };
+
+            // Colisiones con bordes del array y Paredes
+            int tx = (int)roundf(nextPos.x);
+            int ty = (int)roundf(nextPos.y);
+
+            if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT) {
+                Tile& t = mapa[tx + ty * MAP_WIDTH];
+                if (t.tipo != PARED) {
+                    posJugador = nextPos;
+                    
+                    // Lógica de Portal
+                    if (t.tipo == PORTAL) {
+                        currentRoom = t.destinoSala;
+                        posJugador = (currentRoom == 0) ? spawnSala0 : spawnSala1;
+                        // Ajustar cámara inmediatamente al spawn para que empiece desde ahí
+                        cameraPos = ConvertirAIsometrico(posJugador.x, posJugador.y);
+                    }
+                }
+            }
+        }
+
+        // --- ACTUALIZACIÓN DE CÁMARA ---
+        // cameraPos está en coordenadas isométricas del mundo. Para centrar al jugador,
+        // acercamos la cámara hacia la posición isométrica del jugador (isoP).
+        Vector2 isoP = ConvertirAIsometrico(posJugador.x, posJugador.y);
+        const float CAM_FOLLOW_INTERP = 0.18f; // mayor -> cámara más pegada al jugador
+        cameraPos.x += (isoP.x - cameraPos.x) * CAM_FOLLOW_INTERP;
+        cameraPos.y += (isoP.y - cameraPos.y) * CAM_FOLLOW_INTERP;
+
+        // --- DIBUJADO (Z-Sorting) ---
+        // Nuevo sistema: recoger entidades (tiles + jugador), ordenar por profundidad y renderizar
+        std::vector<EntidadDibujable> listaDibujo;
+        listaDibujo.reserve(MAP_WIDTH * MAP_HEIGHT + 1);
+
+        // A. Meter los tiles en la lista
+        for (int y = 0; y < MAP_HEIGHT; y++) {
+            for (int x = 0; x < MAP_WIDTH; x++) {
+                Vector2 sPos = ConvertirAIsometrico((float)x, (float)y);
+                sPos.x = sPos.x - cameraPos.x + (anchoP / 2);
+                sPos.y = sPos.y - cameraPos.y + (altoP / 2);
+
+                if (sPos.x < -64 || sPos.x > anchoP + 64 || sPos.y < -32 || sPos.y > altoP + 32) continue;
+
+                Tile t = mapa[x + y * MAP_WIDTH];
+                // Base del tile (suelo o base de la pared)
+                listaDibujo.push_back({ sPos, (float)(x + y), 0, t });
+                // Si es pared con altura, añadimos otra entidad para el techo que pueda aparecer encima del jugador
+                if (t.tipo == PARED && t.alturaPixels > 0) {
+                    Vector2 posTecho = { sPos.x, sPos.y - (float)t.alturaPixels };
+                    listaDibujo.push_back({ posTecho, (float)(x + y) + 0.5f, 2, t });
+                }
+            }
+        }
+
+        // B. Meter al Jugador en la misma lista
+        Vector2 pIso = ConvertirAIsometrico(posJugador.x, posJugador.y);
+        Vector2 pPos = { pIso.x - cameraPos.x + (anchoP / 2), pIso.y - cameraPos.y + (altoP / 2) };
+        listaDibujo.push_back({ pPos, posJugador.x + posJugador.y, 1, {SUELO, WHITE, -1} });
+
+        // C. ORDENAR POR PROFUNDIDAD (La clave del Z-Sorting)
+        std::sort(listaDibujo.begin(), listaDibujo.end(), [](const EntidadDibujable& a, const EntidadDibujable& b) {
+            if (a.profundidad != b.profundidad) return a.profundidad < b.profundidad;
+            // Si la profundidad es igual, dibujar primero tiles (tipo 0) y luego jugador (tipo 1)
+            return a.tipo < b.tipo;
+        });
+
+        // D. RENDERIZAR TODO EN ORDEN
+        BeginDrawing();
+        ClearBackground({ 25, 25, 25, 255 });
+
+        for (auto& item : listaDibujo) {
+            if (item.tipo == 0) { // Tile base (suelo o base de pared)
+                // Dibujo normal de la base (suelo o base de pared)
+                DrawPoly(item.posPantalla, 4, 32.5f, 0.0f, item.tileData.color);
+                DrawPolyLines(item.posPantalla, 4, 32.5f, 0.0f, { 0, 0, 0, 50 });
+                if (item.tileData.tipo == PORTAL) DrawCircleV(item.posPantalla, 12, SKYBLUE);
+                // Además dibujamos las caras laterales DEBAJO del jugador (para que el jugador pueda estar delante)
+                if (item.tileData.tipo == PARED && item.tileData.alturaPixels > 0) {
+                    float alturaPared = (float)item.tileData.alturaPixels;
+                    Vector2 v2 = { item.posPantalla.x - 32.0f, item.posPantalla.y + 16.0f };
+                    DrawRectangleGradientEx({ v2.x, v2.y - alturaPared, 32.0f, alturaPared }, DARKGRAY, DARKGRAY, BLACK, BLACK);
+                    Vector2 v3 = { item.posPantalla.x + 32.0f, item.posPantalla.y + 16.0f };
+                    DrawRectangleGradientEx({ item.posPantalla.x, v3.y - alturaPared, 32.0f, alturaPared }, GRAY, GRAY, DARKGRAY, DARKGRAY);
+                }
+            }
+            else if (item.tipo == 2) { // Tile top (techo) que debe dibujarse potencialmente por encima del jugador
+                Vector2 posTecho = item.posPantalla;
+                DrawPoly(posTecho, 4, 32.5f, 0.0f, item.tileData.color);
+                DrawPolyLines(posTecho, 4, 32.5f, 0.0f, BLACK);
+                if (item.tileData.tipo == PORTAL) DrawCircleV(posTecho, 12, SKYBLUE);
+            }
+            else if (item.tipo == 1) { // Dibujar Jugador
+                Color pCol = (dashTimer > 0) ? YELLOW : (dashCD <= 0 ? GREEN : MAROON);
+                DrawCircleV(item.posPantalla, 15, pCol);
+                DrawCircleLines((int)item.posPantalla.x, (int)item.posPantalla.y, 15, WHITE);
+            }
+        }
+
+        // UI de estado (encima de todo)
+        DrawRectangle(10, 10, 260, 80, Fade(BLACK, 0.6f));
+        DrawText(TextFormat("SALA: %d | POS: %.1f, %.1f", currentRoom, posJugador.x, posJugador.y), 20, 20, 20, RAYWHITE);
+        DrawText(TextFormat("DASH: %s", (dashCD <= 0 ? "LISTO (SHIFT)" : "RECARGANDO...")), 20, 50, 18, (dashCD <= 0 ? GREEN : ORANGE));
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+    return 0;
+}

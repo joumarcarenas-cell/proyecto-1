@@ -1,0 +1,268 @@
+﻿#include "raylib.h"
+#include "Player.h"
+#include <vector>
+#include <algorithm>
+#include <cmath>
+
+const int MAP_WIDTH = 60;
+const int MAP_HEIGHT = 60;
+
+enum TileType { SUELO, PARED, PORTAL };
+
+struct Tile {
+    TileType tipo;
+    Color color;
+    int destinoSala;
+    int alturaPixels;
+};
+
+struct EntidadDibujable {
+    Vector2 posPantalla;
+    float profundidad;
+    int tipo; // 0 = Suelo, 1 = Jugador, 2 = Techo, 3 = Selector
+    Tile tileData;
+};
+
+// Simple projectile with hitbox
+struct Projectile {
+    Vector2 pos;    // map-space coordinates (floats)
+    Vector2 vel;    // map-space units per second
+    float radius;   // hitbox radius in map units
+    int damage;
+    bool alive;
+    Color color;
+    int ownerId;    // 0 = player, reserved for future
+};
+
+// CORRECCIÓN: Fórmula de Raycasting pulida
+static Vector2 GetMouseMapPos(Vector2 mousePos, Vector2 cameraPos, int anchoP, int altoP) {
+    // El offset debe ser exacto al que usas en el dibujado
+    float relativeX = mousePos.x - (anchoP / 2.0f) + cameraPos.x;
+    float relativeY = mousePos.y - (altoP / 2.0f) + cameraPos.y;
+
+    // Inversa de la matriz isométrica (32 es la mitad del ancho del tile, 16 la mitad del alto)
+    float mapX = (relativeX / 64.0f) + (relativeY / 32.0f);
+    float mapY = (relativeY / 32.0f) - (relativeX / 64.0f);
+
+    return { mapX, mapY };
+}
+
+void GenerarMapaBase(std::vector<Tile>& mapa) {
+    for (int y = 0; y < MAP_HEIGHT; y++) {
+        for (int x = 0; x < MAP_WIDTH; x++) {
+            if (x == 0 || x == MAP_WIDTH - 1 || y == 0 || y == MAP_HEIGHT - 1)
+                mapa[x + y * MAP_WIDTH] = { PARED, GRAY, -1, 40 };
+            else
+                mapa[x + y * MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+        }
+    }
+}
+
+int main() {
+    const int anchoP = 1768;
+    const int altoP = 992;
+    InitWindow(anchoP, altoP, "Motor Isométrico - Raycasting & Selector");
+    SetTargetFPS(60);
+
+    std::vector<Tile> mapa(MAP_WIDTH * MAP_HEIGHT);
+    GenerarMapaBase(mapa);
+
+    // Active projectiles list
+    std::vector<Projectile> projectiles;
+
+    Player jugador({ 30.0f, 30.0f });
+    Vector2 cameraPos = jugador.GetIsoPos();
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // Prueba de daño (Solo para testear la barra)
+        if (IsKeyPressed(KEY_H)) {
+            jugador.stats.hp -= 10;
+            if (jugador.stats.hp < 0) jugador.stats.hp = 0;
+        }
+        // Prueba de curación
+        if (IsKeyPressed(KEY_J)) {
+            jugador.stats.hp += 10;
+            if (jugador.stats.hp > jugador.stats.hpMax) jugador.stats.hp = jugador.stats.hpMax;
+        }
+
+        // 1. LÓGICA DE RAYCASTING
+        Vector2 mousePos = GetMousePosition();
+        Vector2 mapPos = GetMouseMapPos(mousePos, cameraPos, anchoP, altoP);
+        int tileX = (int)floor(mapPos.x);
+        int tileY = (int)floor(mapPos.y);
+
+        // Acción: Disparar proyectil con Click Izquierdo, Borrar con Click Derecho
+        if (tileX >= 0 && tileX < MAP_WIDTH && tileY >= 0 && tileY < MAP_HEIGHT) {
+            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                // Spawn a projectile from player towards mouse map position
+                Vector2 dir = { mapPos.x - jugador.pos.x, mapPos.y - jugador.pos.y };
+                float len = sqrtf(dir.x*dir.x + dir.y*dir.y);
+                if (len > 0.001f) {
+                    dir.x /= len; dir.y /= len;
+                    Projectile p;
+                    p.pos = jugador.pos;
+                    p.vel = { dir.x * 12.0f, dir.y * 12.0f }; // speed in tiles/sec
+                    p.radius = 0.25f;
+                    p.damage = 10;
+                    p.alive = true;
+                    p.color = ORANGE;
+                    p.ownerId = 0;
+                    projectiles.push_back(p);
+                }
+            }
+            if (IsMouseButtonDown(MOUSE_RIGHT_BUTTON)) {
+                mapa[tileX + tileY * MAP_WIDTH] = { SUELO, LIGHTGRAY, -1, 0 };
+            }
+        }
+
+        jugador.Update(dt, mapa, MAP_WIDTH, MAP_HEIGHT);
+
+        // Update projectiles
+        for (auto &pr : projectiles) {
+            if (!pr.alive) continue;
+            pr.pos.x += pr.vel.x * dt;
+            pr.pos.y += pr.vel.y * dt;
+
+            // Destroy on out of bounds
+            int px = (int)floor(pr.pos.x);
+            int py = (int)floor(pr.pos.y);
+            if (px < 0 || py < 0 || px >= MAP_WIDTH || py >= MAP_HEIGHT) { pr.alive = false; continue; }
+
+            // Collide with walls
+            if (mapa[px + py * MAP_WIDTH].tipo == PARED) {
+                pr.alive = false;
+                continue;
+            }
+
+            // Collision with player (if projectile is hostile)
+            if (pr.ownerId != 0) {
+                float dx = pr.pos.x - jugador.pos.x;
+                float dy = pr.pos.y - jugador.pos.y;
+                float dist2 = dx*dx + dy*dy;
+                float r = pr.radius + jugador.hitboxRadius;
+                if (dist2 <= r*r) {
+                    // apply damage
+                    jugador.stats.hp -= pr.damage;
+                    if (jugador.stats.hp <= 0) { jugador.estaVivo = false; jugador.stats.hp = 0; }
+                    pr.alive = false;
+                }
+            }
+        }
+
+        // Remove dead projectiles
+        projectiles.erase(std::remove_if(projectiles.begin(), projectiles.end(), [](const Projectile &p){ return !p.alive; }), projectiles.end());
+
+        // 2. CÁMARA
+        Vector2 targetIso = jugador.GetIsoPos();
+        cameraPos.x += (targetIso.x - cameraPos.x) * 0.10f;
+        cameraPos.y += (targetIso.y - cameraPos.y) * 0.10f;
+
+        // 3. Z-SORTING
+        std::vector<EntidadDibujable> listaDibujo;
+
+        for (int y = 0; y < MAP_HEIGHT; y++) {
+            for (int x = 0; x < MAP_WIDTH; x++) {
+                Vector2 sPos = { (float)(x - y) * 32.0f - cameraPos.x + (anchoP / 2),
+                                 (float)(x + y) * 16.0f - cameraPos.y + (altoP / 2) };
+
+                if (sPos.x < -100 || sPos.x > anchoP + 100 || sPos.y < -100 || sPos.y > altoP + 100) continue;
+
+                Tile& t = mapa[x + y * MAP_WIDTH];
+                listaDibujo.push_back({ sPos, (float)(x + y), 0, t });
+
+                if (t.tipo == PARED) {
+                    Vector2 techoPos = { sPos.x, sPos.y - t.alturaPixels };
+                    listaDibujo.push_back({ techoPos, (float)(x + y) + 0.5f, 2, t });
+                }
+
+                // NUEVO: Dibujar el selector si el mouse está sobre este tile
+                if (x == tileX && y == tileY) {
+                    listaDibujo.push_back({ sPos, (float)(x + y) + 0.1f, 3, t });
+                }
+            }
+        }
+
+        Vector2 pIso = jugador.GetIsoPos();
+        Vector2 pScreen = { pIso.x - cameraPos.x + (anchoP / 2), pIso.y - cameraPos.y + (altoP / 2) };
+        listaDibujo.push_back({ pScreen, jugador.pos.x + jugador.pos.y, 1, {SUELO, WHITE, -1, 0} });
+
+        // Add projectiles to draw list
+        for (const auto &pr : projectiles) {
+            Vector2 iso = { (pr.pos.x - pr.pos.y) * 32.0f, (pr.pos.x + pr.pos.y) * 16.0f };
+            Vector2 screen = { iso.x - cameraPos.x + (anchoP / 2), iso.y - cameraPos.y + (altoP / 2) };
+            Tile tmp = { SUELO, pr.color, -1, 0 };
+            listaDibujo.push_back({ screen, pr.pos.x + pr.pos.y, 4, tmp });
+        }
+
+        std::sort(listaDibujo.begin(), listaDibujo.end(), [](const EntidadDibujable& a, const EntidadDibujable& b) {
+            return a.profundidad < b.profundidad;
+            });
+
+        // 4. DIBUJADO
+        BeginDrawing();
+        ClearBackground({ 20, 20, 25, 255 });
+
+        for (auto& item : listaDibujo) {
+            if (item.tipo == 0) { // Suelo
+                DrawPoly(item.posPantalla, 4, 32.5f, 0.0f, item.tileData.color);
+                if (item.tileData.tipo == PARED) {
+                    DrawRectangle(item.posPantalla.x - 32, item.posPantalla.y + 16 - item.tileData.alturaPixels, 32, item.tileData.alturaPixels, DARKGRAY);
+                    DrawRectangle(item.posPantalla.x, item.posPantalla.y + 16 - item.tileData.alturaPixels, 32, item.tileData.alturaPixels, GRAY);
+                }
+            }
+            else if (item.tipo == 1) { // Jugador
+                jugador.Draw(cameraPos, anchoP, altoP);
+            }
+            else if (item.tipo == 2) { // Techo
+                DrawPoly(item.posPantalla, 4, 32.5f, 0.0f, item.tileData.color);
+                DrawPolyLines(item.posPantalla, 4, 32.5f, 0.0f, BLACK);
+            }
+            else if (item.tipo == 3) { // SELECTOR VISUAL
+                DrawPolyLinesEx(item.posPantalla, 4, 33.0f, 0.0f, 3.0f, YELLOW);
+            }
+            else if (item.tipo == 4) { // Projectile (draw as circle)
+                DrawCircleV(item.posPantalla, 8, item.tileData.color);
+                DrawCircleLines((int)item.posPantalla.x, (int)item.posPantalla.y, 8, BLACK);
+            }
+        }
+
+        DrawText(TextFormat("Tile: [%d, %d]", tileX, tileY), 10, 40, 20, YELLOW);
+        DrawText("Click Izquierdo: Muro | Click Derecho: Suelo", 10, 10, 20, RAYWHITE);
+        // ... (aquí termina tu bucle de for(item : listaDibujo) ...)
+
+        // --- MENÚ DE MUERTE ---
+        if (!jugador.estaVivo) {
+            // Capa oscura sobre el juego
+            DrawRectangle(0, 0, anchoP, altoP, Fade(BLACK, 0.8f));
+
+            // Texto de muerte centrado
+            const char* textoMuerte = "HAS MUERTO";
+            int fontSize = 40;
+            DrawText(textoMuerte, anchoP / 2 - MeasureText(textoMuerte, fontSize) / 2, altoP / 2 - 60, fontSize, RED);
+
+            // Botón de Reaparecer
+            Rectangle btn = { (float)anchoP / 2 - 100, (float)altoP / 2, 200, 50 };
+            bool sobreBoton = CheckCollisionPointRec(GetMousePosition(), btn);
+
+            DrawRectangleRec(btn, sobreBoton ? DARKGRAY : GRAY);
+            DrawRectangleLinesEx(btn, 2, WHITE);
+
+            const char* textoBtn = "REAPARECER";
+            DrawText(textoBtn, (int)(btn.x + (btn.width / 2) - MeasureText(textoBtn, 20) / 2), (int)(btn.y + 15), 20, WHITE);
+
+            // Lógica de clic para revivir
+            if (sobreBoton && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                jugador.stats.hp = jugador.stats.hpMax; // Reset vida
+                jugador.pos = { 30, 30 };               // Reset posición
+                jugador.estaVivo = true;                // Revivir
+            }
+        }
+
+        DrawFPS(anchoP - 80, 10);
+        EndDrawing(); // <-- Esto ya lo tienes, pon el código justo ANTES.
+    }
+    CloseWindow();
+    return 0;
+}
