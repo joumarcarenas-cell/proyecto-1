@@ -1,6 +1,11 @@
-﻿  FileName.cpp
-C:\Users\jouma\source\repos\Project1\FileName.cpp(79,45): warning C4244: 'argumento': conversión de 'float' a 'int'; posible pérdida de datos
-C:\Users\jouma\source\repos\Project1\FileName.cpp(79,35): warning C4244: 'argumento': conversión de 'float' a 'int'; posible pérdida de datos
-C:\Users\jouma\source\repos\Project1\FileName.cpp(83,40): warning C4244: 'argumento': conversión de 'float' a 'int'; posible pérdida de datos
-C:\Users\jouma\source\repos\Project1\FileName.cpp(83,35): warning C4244: 'argumento': conversión de 'float' a 'int'; posible pérdida de datos
+﻿  Player.cpp
+C:\Users\jouma\source\repos\Project1\Player.cpp(291,66): warning C4244: 'argumento': conversión de 'float' a 'int'; posible pérdida de datos
+C:\Users\jouma\source\repos\Project1\Player.cpp(292,66): warning C4244: 'argumento': conversión de 'float' a 'int'; posible pérdida de datos
+C:\Users\jouma\source\repos\Project1\Player.cpp(338,71): warning C4244: 'argumento': conversión de 'int' a 'float'; posible pérdida de datos
+C:\Users\jouma\source\repos\Project1\Player.cpp(338,58): warning C4244: 'argumento': conversión de 'int' a 'float'; posible pérdida de datos
+C:\Users\jouma\source\repos\Project1\Player.cpp(339,76): warning C4244: 'argumento': conversión de 'int' a 'float'; posible pérdida de datos
+C:\Users\jouma\source\repos\Project1\Player.cpp(339,63): warning C4244: 'argumento': conversión de 'int' a 'float'; posible pérdida de datos
+  main.cpp
+C:\Users\jouma\source\repos\Project1\main.cpp(119,67): warning C4244: 'argumento': conversión de 'int' a 'float'; posible pérdida de datos
+  Generando código...
   Project1.vcxproj -> C:\Users\jouma\source\repos\Project1\x64\Debug\Project1.exe

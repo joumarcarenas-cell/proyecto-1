@@ -7,16 +7,16 @@
       "RelativeMoniker": "D:0:0:{E52488CC-4C4D-4D8F-BBA7-EB5063C92F51}|Project1.vcxproj|solutionrelative:main.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{E52488CC-4C4D-4D8F-BBA7-EB5063C92F51}|Project1.vcxproj|C:\\Users\\jouma\\source\\repos\\Project1\\Entidades.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
-      "RelativeMoniker": "D:0:0:{E52488CC-4C4D-4D8F-BBA7-EB5063C92F51}|Project1.vcxproj|solutionrelative:Entidades.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\jouma\\source\\repos\\Project1\\Tile.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Tile.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{E52488CC-4C4D-4D8F-BBA7-EB5063C92F51}|Project1.vcxproj|C:\\Users\\jouma\\source\\repos\\Project1\\Player.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
-      "RelativeMoniker": "D:0:0:{E52488CC-4C4D-4D8F-BBA7-EB5063C92F51}|Project1.vcxproj|solutionrelative:Player.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\jouma\\source\\repos\\Project1\\Entidades.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Entidades.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{E52488CC-4C4D-4D8F-BBA7-EB5063C92F51}|Project1.vcxproj|C:\\Users\\jouma\\source\\repos\\Project1\\Tile.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
-      "RelativeMoniker": "D:0:0:{E52488CC-4C4D-4D8F-BBA7-EB5063C92F51}|Project1.vcxproj|solutionrelative:Tile.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|C:\\Users\\jouma\\source\\repos\\Project1\\Player.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Player.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     }
   ],
   "DocumentGroupContainers": [
@@ -30,7 +30,7 @@
           "Children": [
             {
               "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 1,
               "Title": "Tile.h",
               "DocumentMoniker": "C:\\Users\\jouma\\source\\repos\\Project1\\Tile.h",
               "RelativeDocumentMoniker": "Tile.h",
@@ -42,7 +42,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 2,
               "Title": "Entidades.h",
               "DocumentMoniker": "C:\\Users\\jouma\\source\\repos\\Project1\\Entidades.h",
               "RelativeDocumentMoniker": "Entidades.h",
@@ -54,7 +54,7 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 3,
               "Title": "Player.h",
               "DocumentMoniker": "C:\\Users\\jouma\\source\\repos\\Project1\\Player.h",
               "RelativeDocumentMoniker": "Player.h",
@@ -72,7 +72,7 @@
               "RelativeDocumentMoniker": "main.cpp",
               "ToolTip": "C:\\Users\\jouma\\source\\repos\\Project1\\main.cpp",
               "RelativeToolTip": "main.cpp",
-              "ViewState": "AgIAAOMAAAAAAAAAAAAAAEwAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAAPsAAAAAAAAAAAAAAEwAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
               "WhenOpened": "0001-01-01T04:00:00Z",
               "EditorCaption": ""

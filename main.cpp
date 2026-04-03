@@ -4,183 +4,294 @@
 #include <vector>
 #include <algorithm>
 
+// Implementación de Enemy::Update y Draw (Para que compile todo junto)
+void Enemy::Update() {
+    if (isDead) {
+        respawnTimer -= GetFrameTime();
+        if (respawnTimer <= 0.0f) { isDead = false; hp = maxHp; position = spawnPos; velocity = {0, 0}; }
+        return;
+    }
+    Vector2 nextPos = Vector2Add(position, Vector2Scale(velocity, GetFrameTime()));
+    
+    // Restricción de Arena (Hull de Diamante)
+    float dx = std::abs(nextPos.x - 2000.0f) / 1400.0f;
+    float dy = std::abs(nextPos.y - 2000.0f) / 700.0f;
+    if (dx + dy <= 1.0f) {
+        position = nextPos;
+    }
+    
+    velocity = Vector2Scale(velocity, 0.85f);
+}
+
+void Enemy::Draw() {
+    if (isDead) return;
+    DrawEllipse((int)position.x, (int)position.y, radius, radius * 0.5f, Fade(BLACK, 0.4f));
+    DrawCircleV({position.x, position.y - 30}, radius, color);
+    DrawHealthBar(80, 10);
+}
+
 void DrawQuad(Vector2 p1, Vector2 p2, Vector2 p3, Vector2 p4, Color c) {
-    // Dibujamos ambas direcciones de vértices para anular culling por error
     DrawTriangle(p1, p2, p3, c); DrawTriangle(p1, p3, p2, c);
     DrawTriangle(p1, p3, p4, c); DrawTriangle(p1, p4, p3, c);
 }
 
-struct Particle {
-    Vector2 pos;
-    Vector2 vel;
-    float life;
-    Color col;
-};
+struct Particle { Vector2 pos; Vector2 vel; float life; Color col; };
 
 int main() {
-    InitWindow(1280, 720, "Expandido - Fisicas y Particulas");
+    InitWindow(1280, 720, "Hades Prototype - Skills & Energy");
     SetTargetFPS(60);
 
-    Player player({2000, 2000}); // Centro del mapa gigante 4000x4000
-    Enemy boss({2200, 2000});
-
-    Camera2D camera = { 0 };
-    camera.offset = { 1280.0f / 2.0f, 720.0f / 2.0f }; // Camara en el centro de la pantalla
-    camera.rotation = 0.0f;
-    camera.zoom = 1.0f;
-
+    Player player({2000, 2000});
+    player.energy = 100.0f; // ENERGÍA INICIAL PARA PRUEBAS (Integridad V2)
+    Enemy boss({2300, 2000});
+    boss.maxHp = 2000.0f;
+    boss.hp = 2000.0f;
+    Camera2D camera = { {640, 360}, player.position, 0.0f, 1.0f };
     std::vector<Particle> particles;
+    
+    float hitLagTimer = 0.0f;
+    float screenShake = 0.0f;
+
+    GamePhase currentPhase = GamePhase::RUNNING;
+    int* rebindingKey = nullptr;
+    std::string rebindingName = "";
+
+    HideCursor();
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         
-        // La cámara sigue al jugador
-        camera.target = player.position;
-
-        // Entregar la posición global del mouse a la lógica del jugador para apuntar
-        player.targetAim = GetScreenToWorld2D(GetMousePosition(), camera);
-
-        // 1. Actualización de entidades
-        player.Update();
-        boss.Update();
-
-        // 2. Lógica de Colisión "Soft-Body" (Para que no se encimen)
-        if (!boss.isDead) {
-            Vector2 diff = Vector2Subtract(player.position, boss.position);
-            float dist = Vector2Length(diff);
-            float minDist = player.radius + boss.radius;
-            if (dist > 0 && dist < minDist) {
-                float overlap = minDist - dist;
-                Vector2 push = Vector2Scale(Vector2Normalize(diff), overlap * 0.5f);
-                player.position = Vector2Add(player.position, push);
-                boss.position = Vector2Subtract(boss.position, push);
+        // --- GESTIÓN DE PAUSA Y MENÚS ---
+        if (IsKeyPressed(KEY_K)) {
+            if (currentPhase == GamePhase::RUNNING) {
+                currentPhase = GamePhase::PAUSED;
+                ShowCursor();
+            } else if (currentPhase == GamePhase::PAUSED || currentPhase == GamePhase::SETTINGS) {
+                currentPhase = GamePhase::RUNNING;
+                HideCursor();
+                rebindingKey = nullptr;
             }
         }
 
-        // 3. Lógica de ataque y combate
+        if (currentPhase == GamePhase::RUNNING) {
+            if (hitLagTimer > 0) hitLagTimer -= dt;
+            if (screenShake > 0) screenShake -= dt;
+            camera.target = player.position;
+            player.targetAim = GetScreenToWorld2D(GetMousePosition(), camera);
+
+            if (hitLagTimer <= 0) {
+                player.Update();
+                boss.Update();
+            }
+        } else if (currentPhase == GamePhase::REBINDING) {
+            int key = GetKeyPressed();
+            if (key > 0) {
+                *rebindingKey = key;
+                currentPhase = GamePhase::SETTINGS;
+                rebindingKey = nullptr;
+            }
+        }
+
+        // Colisión de Giro (Spin)
+        if (currentPhase == GamePhase::RUNNING && player.isSpinning && player.spinTimer <= 0 && !boss.isDead) {
+            float dist = Vector2Distance(player.position, boss.position);
+            if (dist < player.radius + 125.0f) { // Rango Melee 125 (Reducido 15%)
+                boss.hp -= 5.0f; 
+                player.spinHitCount++;
+                player.spinTimer = 0.15f; 
+                
+                // Cada 2 hits, consume 10% de energía
+                if (player.spinHitCount % 2 == 0) {
+                    player.energy -= 10.0f;
+                    if (player.energy < 0) player.energy = 0;
+                }
+                
+                // Partículas de impacto
+                for (int i = 0; i < 5; i++) {
+                    particles.push_back({ boss.position, { (float)GetRandomValue(-150, 150), (float)GetRandomValue(-150, 150) }, 0.5f, SKYBLUE });
+                }
+            }
+        }
+
+        // Colisión Bumeranes Activos (Múltiples y Orbitales)
+        for (auto& b : player.activeBoomerangs) {
+            if (b.active && !boss.isDead) {
+                if (CheckCollisionCircles(b.position, b.isOrbital ? 30 : 25, boss.position, boss.radius)) {
+                    boss.hp -= b.isOrbital ? 3.0f : 1.5f; 
+                    if (boss.hp <= 0) { boss.isDead = true; boss.respawnTimer = 3.0f; }
+                }
+            }
+        }
+
+        // Combate e Impactos
         if (!boss.isDead && player.isAttacking && !player.hasHit) {
             if (player.CheckAttackCollision(boss)) {
-                boss.hp -= player.combo[player.comboStep].damage;
-                player.hasHit = true; 
+                float dmg = player.combo[player.comboStep].damage;
+                boss.hp -= dmg;
+                player.hasHit = true;
+                
+                // RECARGA ENERGIA (5 golpes para 100% -> 20 por golpe)
+                player.energy = fminf(player.maxEnergy, player.energy + 20.0f);
+                
+                // ROBO DE VIDA (30% si está buffado)
+                if (player.isBuffed) player.hp = fminf(player.maxHp, player.hp + (dmg * 0.3f));
 
-                // Muerte del enemigo
-                if (boss.hp <= 0) {
-                    boss.isDead = true;
-                    boss.respawnTimer = 3.0f; // Reaparece en 3 segundos
-                }
-
-                // Knockback: Empujón violento en dirección al ataque
-                Vector2 knockbackDir = Vector2Normalize(Vector2Subtract(boss.position, player.position));
-                boss.velocity = Vector2Scale(knockbackDir, player.combo[player.comboStep].damage * 60.0f); 
-
-                // Emitir partículas de golpe (simulando sangre y chispas)
+                // FEEDBACK: HIT LAG (Sutil) + SCREEN SHAKE (Mínimo)
+                hitLagTimer = 0.02f; 
+                screenShake = dmg * 0.02f; 
+                
+                boss.velocity = Vector2Scale(player.facing, dmg * 50.0f);
                 for (int i = 0; i < 20; i++) {
-                    Vector2 pVel = { (float)GetRandomValue(-400, 400), (float)GetRandomValue(-400, 400) };
-                    particles.push_back({boss.position, pVel, (float)GetRandomValue(3, 7)/10.0f, RED});
+                    float pAngle = atan2f(player.facing.y, player.facing.x) + (float)GetRandomValue(-60, 60) * DEG2RAD;
+                    float pSpeed = (float)GetRandomValue(200, 600);
+                    particles.push_back({boss.position, {cosf(pAngle) * pSpeed, sinf(pAngle) * pSpeed}, 0.6f, (player.isBuffed ? GOLD : RED)});
+                }
+            }
+        }
+        
+        // 3. Definitiva (R) - Solo si el enemigo tiene < 75% vida y CD listo
+        if (IsKeyPressed(player.controls.ultimate) && player.ultimateCooldown <= 0 && !boss.isDead && (boss.hp / boss.maxHp) < 0.75f) {
+            player.ActivateUltimate();
+            for (int i = 0; i < 20; i++) particles.push_back({player.position, {(float)GetRandomValue(-400,400), (float)GetRandomValue(-400,400)}, 0.8f, RED});
+        }
+
+        // --- COLISION DE SUPER ESTOCADA ---
+        if (!boss.isDead && player.isDashAttacking && !player.hasDashHit) {
+            if (player.CheckDashCollision(boss)) {
+                float dmg = 45.0f; // 10 más que el último golpe
+                boss.hp -= dmg;
+                player.hasDashHit = true;
+                
+                screenShake = 1.2f;
+                for (int i = 0; i < 15; i++) {
+                    particles.push_back({ boss.position, { (float)GetRandomValue(-300, 300), (float)GetRandomValue(-300, 300) }, 0.6f, GOLD });
                 }
             }
         }
 
-        // 4. Actualización de partículas
-        for (auto& p : particles) {
-            p.pos = Vector2Add(p.pos, Vector2Scale(p.vel, dt));
-            p.vel = Vector2Scale(p.vel, 0.9f); // Fricción en el aire para frenarlas
-            p.life -= dt;
-        }
-        // Limpiar partículas muertas
-        particles.erase(std::remove_if(particles.begin(), particles.end(), 
-            [](const Particle& p){ return p.life <= 0; }), particles.end());
+        // Partículas
+        for (auto& p : particles) { p.pos = Vector2Add(p.pos, Vector2Scale(p.vel, dt)); p.life -= dt; }
+        particles.erase(std::remove_if(particles.begin(), particles.end(), [](const Particle& p){ return p.life <= 0; }), particles.end());
 
-        // 5. Preparar Z-Sorting
-        std::vector<Entity*> drawQueue = { &player, &boss };
-        std::sort(drawQueue.begin(), drawQueue.end(), [](Entity* a, Entity* b) {
-            return a->position.y < b->position.y;
-        });
-
-        // 6. Dibujo
         BeginDrawing();
-            ClearBackground({20, 25, 30, 255}); // Color asfalto oscuro
+            ClearBackground({25, 30, 40, 255}); 
+            
+            // Aplicar Screen Shake Mínimo
+            Camera2D shakeCam = camera;
+            if (screenShake > 0) {
+                shakeCam.offset.x += (float)GetRandomValue(-1, 1) * screenShake;
+                shakeCam.offset.y += (float)GetRandomValue(-1, 1) * screenShake;
+            }
 
-            BeginMode2D(camera);
-                // --- ESTRUCTURA DE BANDEJA ISOMÉTRICA (Tray) ---
-                Vector2 C = { 2000.0f, 2000.0f }; // Centro
-                float Rx = 1400.0f; 
-                float Ry = 700.0f;
-                float Z = 150.0f; // Altura de los muros (z-depth)
-
-                Vector2 T = { C.x, C.y - Ry };
-                Vector2 R = { C.x + Rx, C.y };
-                Vector2 B = { C.x, C.y + Ry };
-                Vector2 L = { C.x - Rx, C.y };
-
-                Vector2 Tu = { T.x, T.y - Z };
-                Vector2 Lu = { L.x, L.y - Z };
-                Vector2 Ru = { R.x, R.y - Z };
-
-                Vector2 Ld = { L.x, L.y + Z };
-                Vector2 Bd = { B.x, B.y + Z };
-                Vector2 Rd = { R.x, R.y + Z };
-
-                // 1. Piso interior de la bandeja
-                DrawQuad(T, L, B, R, {220, 220, 225, 255}); // Color claro (tipo lienzo)
-
-                // 2. Muros Interiores (Top-Left y Top-Right)
-                DrawQuad(Lu, L, T, Tu, {180, 180, 185, 255}); // Gris medio
-                DrawQuad(Tu, T, R, Ru, {140, 140, 145, 255}); // Gris oscuro (sombra)
-
-                // 3. Muros Exteriores Frontales (Bottom-Left y Bottom-Right cayendo)
-                DrawQuad(L, Ld, Bd, B, {140, 140, 145, 255}); // Gris oscuro
-                DrawQuad(B, Bd, Rd, R, {180, 180, 185, 255}); // Gris medio
-
-                // 4. Perfilados (Outlines) estilo boceto para resaltar los cruces (estilo el ejemplo dado)
-                Color lineCol = { 40, 40, 40, 255 };
-                float thick = 4.0f;
+            BeginMode2D(shakeCam);
+                // Arena Isométrica Mejorada (Diamante 1400x700)
+                Vector2 pNorth = { 2000, 2000 - 700 };
+                Vector2 pSouth = { 2000, 2000 + 700 };
+                Vector2 pEast  = { 2000 + 1400, 2000 };
+                Vector2 pWest  = { 2000 - 1400, 2000 };
                 
-                // Bordes superiores interiores
-                DrawLineEx(Lu, Tu, thick, lineCol);
-                DrawLineEx(Tu, Ru, thick, lineCol);
+                Color groundColor = { 245, 245, 245, 255 }; // Blanco/Gris muy claro
+                Color wallColor   = { 180, 185, 195, 255 }; // Color paredes (mismas que el borde pero rellenas)
+                Color borderColor = { 60, 65, 75, 255 };
                 
-                // Esquinas verticales de arrriba
-                DrawLineEx(Lu, L, thick, lineCol);
-                DrawLineEx(Tu, T, thick, lineCol);
-                DrawLineEx(Ru, R, thick, lineCol);
+                float wallHeight = 120.0f;
                 
-                // Bordes del rombo interior (El suelo)
-                DrawLineEx(L, T, thick, lineCol);
-                DrawLineEx(T, R, thick, lineCol);
-                DrawLineEx(L, B, thick, lineCol);
-                DrawLineEx(B, R, thick, lineCol);
-                
-                // Esquinas verticales de abajo
-                DrawLineEx(L, Ld, thick, lineCol);
-                DrawLineEx(B, Bd, thick, lineCol);
-                DrawLineEx(R, Rd, thick, lineCol);
-                
-                // Bordes inferiores exteriores
-                DrawLineEx(Ld, Bd, thick, lineCol);
-                DrawLineEx(Bd, Rd, thick, lineCol);
+                // --- DIBUJO DE PAREDES TRASERAS (Profundidad 2.5D) ---
+                // Pared Nor-Oeste
+                DrawQuad(pWest, pNorth, {pNorth.x, pNorth.y - wallHeight}, {pWest.x, pWest.y - wallHeight}, wallColor);
+                // Pared Nor-Este
+                DrawQuad(pNorth, pEast, {pEast.x, pEast.y - wallHeight}, {pNorth.x, pNorth.y - wallHeight}, ColorBrightness(wallColor, -0.1f));
 
-                // Dibujar entidades encima del piso (el Z-sort respeta la elevación visual del tray)
-                for (auto entity : drawQueue) {
-                    entity->Draw();
-                }
+                // Dibujar el relleno del diamante
+                DrawTriangle(pWest, pNorth, pEast, groundColor);
+                DrawTriangle(pWest, pEast, pSouth, groundColor);
+                
+                // Dibujar bordes definidos (Suelo)
+                DrawLineEx(pNorth, pEast, 5.0f, borderColor);
+                DrawLineEx(pEast, pSouth, 5.0f, borderColor);
+                DrawLineEx(pSouth, pWest, 5.0f, borderColor);
+                DrawLineEx(pWest, pNorth, 5.0f, borderColor);
+                
+                // Bordes superiores de las paredes
+                DrawLineEx({pWest.x, pWest.y - wallHeight}, {pNorth.x, pNorth.y - wallHeight}, 5.0f, borderColor);
+                DrawLineEx({pNorth.x, pNorth.y - wallHeight}, {pEast.x, pEast.y - wallHeight}, 5.0f, borderColor);
+                DrawLineEx(pWest, {pWest.x, pWest.y - wallHeight}, 5.0f, borderColor);
+                DrawLineEx(pNorth, {pNorth.x, pNorth.y - wallHeight}, 5.0f, borderColor);
+                DrawLineEx(pEast, {pEast.x, pEast.y - wallHeight}, 5.0f, borderColor);
+                
+                if (player.position.y < boss.position.y) { player.Draw(); boss.Draw(); }
+                else { boss.Draw(); player.Draw(); }
 
-                // Dibujar partículas usando lógica 2.5D para "rebotar" y caer
-                for (auto& p : particles) {
-                    // Calculamos una parábola basada en su vida para q salten ("height")
-                    // Supongamos que life era 0.5 en maximo.
-                    float heightOff = sinf(p.life * PI * 2.0f) * 40.0f; 
-                    if (heightOff < 0) heightOff = 0; // Evitar ir bajo tierra
-
-                    // Sombrita
-                    DrawEllipse((int)p.pos.x, (int)p.pos.y, 4, 2, Fade(BLACK, 0.5f));
-                    // Partícula real
-                    DrawCircleV({p.pos.x, p.pos.y - heightOff}, 4.0f, p.col);
-                }
+                for (auto& p : particles) DrawCircleV(p.pos, 3, p.col);
             EndMode2D();
 
-            DrawText("Modo 2.5D Logico: Mapa gigante 4000x4000.", 10, 10, 20, RAYWHITE);
-            DrawText("Choca con el enemigo, hay empuje, frenado y separacion dinamica.", 10, 35, 20, RAYWHITE);
+            // --- UI DE JUEGO ---
+            if (currentPhase == GamePhase::RUNNING) {
+                DrawText(TextFormat("ENERGIA: %i%%", (int)player.energy), 20, 20, 20, SKYBLUE);
+                if (player.ultimateCooldown > 0) DrawText(TextFormat("R EN CD: %.1fs", player.ultimateCooldown), 20, 80, 20, RED);
+            }
+
+            // --- MENÚ DE PAUSA ---
+            if (currentPhase == GamePhase::PAUSED) {
+                DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.7f));
+                DrawText("JUEGO EN PAUSA", GetScreenWidth()/2 - 120, 150, 30, RAYWHITE);
+                
+                Rectangle btnResume = { (float)GetScreenWidth()/2 - 100, 250, 200, 50 };
+                Rectangle btnSettings = { (float)GetScreenWidth()/2 - 100, 320, 200, 50 };
+                
+                if (CheckCollisionPointRec(GetMousePosition(), btnResume)) {
+                    DrawRectangleRec(btnResume, GRAY);
+                    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) { currentPhase = GamePhase::RUNNING; HideCursor(); }
+                } else DrawRectangleRec(btnResume, DARKGRAY);
+                DrawText("REANUDAR", (int)btnResume.x + 45, (int)btnResume.y + 15, 20, WHITE);
+                
+                if (CheckCollisionPointRec(GetMousePosition(), btnSettings)) {
+                    DrawRectangleRec(btnSettings, GRAY);
+                    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) currentPhase = GamePhase::SETTINGS;
+                } else DrawRectangleRec(btnSettings, DARKGRAY);
+                DrawText("AJUSTES", (int)btnSettings.x + 55, (int)btnSettings.y + 15, 20, WHITE);
+            }
+
+            // --- MENÚ DE AJUSTES ---
+            if (currentPhase == GamePhase::SETTINGS || currentPhase == GamePhase::REBINDING) {
+                DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), BLACK);
+                DrawText("AJUSTES Y CONTROLES", 100, 50, 30, GOLD);
+                
+                // Resolución
+                DrawText("RESOLUCION:", 100, 120, 20, GRAY);
+                Rectangle res1 = { 300, 110, 120, 40 };
+                Rectangle res2 = { 430, 110, 120, 40 };
+                if (CheckCollisionPointRec(GetMousePosition(), res1) && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) SetWindowSize(1280, 720);
+                if (CheckCollisionPointRec(GetMousePosition(), res2) && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) SetWindowSize(1600, 900);
+                DrawRectangleRec(res1, DARKGRAY); DrawText("720p", 335, 120, 20, WHITE);
+                DrawRectangleRec(res2, DARKGRAY); DrawText("900p", 465, 120, 20, WHITE);
+
+                // Rebinds
+                DrawText("CONTROLES (Haz click para reasignar):", 100, 200, 20, GRAY);
+                auto DrawRebind = [&](const char* label, int* key, int y) {
+                    DrawText(label, 120, y, 20, WHITE);
+                    Rectangle r = { 300, (float)y - 5, 150, 30 };
+                    bool hover = CheckCollisionPointRec(GetMousePosition(), r);
+                    DrawRectangleRec(r, hover ? GRAY : DARKGRAY);
+                    DrawText(currentPhase == GamePhase::REBINDING && rebindingKey == key ? "..." : TextFormat("K: %i", *key), 310, y, 20, GOLD);
+                    if (hover && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                        currentPhase = GamePhase::REBINDING;
+                        rebindingKey = key;
+                        rebindingName = label;
+                    }
+                };
+                
+                DrawRebind("Dash", &player.controls.dash, 250);
+                DrawRebind("Bumeran", &player.controls.boomerang, 300);
+                DrawRebind("Berserker", &player.controls.berserker, 350);
+                DrawRebind("Ultimate", &player.controls.ultimate, 400);
+
+                if (currentPhase == GamePhase::REBINDING) {
+                    DrawText(TextFormat("Pulsa una tecla para [%s]", rebindingName.c_str()), 100, 500, 20, SKYBLUE);
+                }
+
+                DrawText("PRESIONA K PARA VOLVER", 100, 650, 15, GRAY);
+            }
         EndDrawing();
     }
     CloseWindow();
