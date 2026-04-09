@@ -128,7 +128,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="Player.cpp" />
+    <ClCompile Include="Reaper.cpp" />
+    <ClCompile Include="Ropera.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
