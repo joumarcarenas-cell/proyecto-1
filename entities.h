@@ -6,7 +6,8 @@
 #include <vector>
 #include <string>
 #include <cmath>
-
+#include "include/graphics/RenderManager.h"
+#include "include/graphics/Animator.h"
 enum class GamePhase { RUNNING, PAUSED, SETTINGS, REBINDING, GAME_OVER, CHAR_SELECT, VICTORY };
 
 // --- REAPER STATES ---
@@ -152,9 +153,15 @@ public:
     float frameTimer = 0.0f;
     float frameSpeed = 0.15f; // segundos por frame
 
+    virtual ~Entity() = default;
+
     virtual void Update() = 0;
     virtual void Draw() = 0;
     
+    virtual float GetZDepth() const {
+        return position.y;
+    }
+
     void DrawHealthBar(float width, float height) {
         float healthPct = hp / maxHp;
         DrawRectangle((int)(position.x - width/2), (int)(position.y - radius - 50), (int)width, (int)height, RED);

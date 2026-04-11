@@ -4,10 +4,11 @@
 #include "entities.h"
 #include "rlgl.h"
 #include <cmath>
+#include <algorithm>
+#include <vector>
+#include <string>
 
-// Extern de main.cpp para particulas si es necesario, o usarResourceManager
-extern std::vector<struct Particle> particles;
-struct Particle { Vector2 pos; Vector2 vel; float life; Color col; };
+#include "include/graphics/VFXSystem.h"
 
 // =====================================================
 // Helper: Dentro del diamante isometrico
@@ -467,9 +468,9 @@ void Reaper::HandleSkills(Enemy& boss) {
         ActivateUltimate(boss.position);
         // Efecto de entrada
         for (int si = 0; si < 20; si++) {
-            particles.push_back({ position,
+            Graphics::VFXSystem::GetInstance().SpawnParticle(position,
                 { (float)GetRandomValue(-350,350), (float)GetRandomValue(-350,350) },
-                0.9f, {0, 200, 255, 255} });
+                0.9f, {0, 200, 255, 255});
         }
     }
 

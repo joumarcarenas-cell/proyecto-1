@@ -130,12 +130,27 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Reaper.cpp" />
     <ClCompile Include="Ropera.cpp" />
+    <ClCompile Include="scenes\MainMenuScene.cpp" />
+    <ClCompile Include="scenes\CharacterSelectScene.cpp" />
+    <ClCompile Include="scenes\GameplayScene.cpp" />
+    <ClCompile Include="scenes\PauseScene.cpp" />
+    <ClCompile Include="scenes\SettingsScene.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="entities.h" />
+    <ClInclude Include="include\graphics\Animator.h" />
+    <ClInclude Include="include\graphics\RenderManager.h" />
+    <ClInclude Include="include\graphics\VFXSystem.h" />
+    <ClInclude Include="include\scenes\Scene.h" />
+    <ClInclude Include="include\scenes\SceneManager.h" />
+    <ClInclude Include="include\scenes\MainMenuScene.h" />
+    <ClInclude Include="include\scenes\CharacterSelectScene.h" />
+    <ClInclude Include="include\scenes\GameplayScene.h" />
+    <ClInclude Include="include\scenes\PauseScene.h" />
+    <ClInclude Include="include\scenes\SettingsScene.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

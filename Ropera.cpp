@@ -11,9 +11,10 @@
 #include "rlgl.h"
 #include <cmath>
 #include <algorithm>
+#include <vector>
+#include <string>
 
-extern std::vector<struct Particle> particles;
-struct Particle { Vector2 pos; Vector2 vel; float life; Color col; };
+#include "include/graphics/VFXSystem.h"
 
 // ─── Arena helper ────────────────────────────────────
 static bool RoArena(Vector2 p, float r) {
@@ -119,11 +120,11 @@ void Ropera::UpdateSwords(float dt, Enemy& boss) {
                     swords[i].flashTimer = 0.20f;
                     // Particulas de impacto
                     for (int k = 0; k < 5; k++) {
-                        particles.push_back({
+                        Graphics::VFXSystem::GetInstance().SpawnParticle(
                             swords[i].position,
                             { (float)GetRandomValue(-200, 200), (float)GetRandomValue(-200, 200) },
                             0.3f, {255, 160, 30, 255}
-                        });
+                        );
                     }
                 }
                 swords[i].swordState = SwordState::RETURNING;
@@ -204,7 +205,7 @@ void Ropera::Update() {
         
         // Estela de particulas durante el dash
         if (GetRandomValue(0, 100) < 60) {
-            particles.push_back({ position, {0,0}, 0.2f, Fade({0, 220, 180, 255}, 0.5f) });
+            Graphics::VFXSystem::GetInstance().SpawnParticle( position, {0,0}, 0.2f, Fade({0, 220, 180, 255}, 0.5f) );
         }
         return;
     }
@@ -250,9 +251,9 @@ void Ropera::Update() {
             dashCooldown   = dashMaxCD;
             // Explosion de particulas al iniciar
             for (int k = 0; k < 8; k++)
-                particles.push_back({ position,
+                Graphics::VFXSystem::GetInstance().SpawnParticle( position,
                     {(float)GetRandomValue(-200,200),(float)GetRandomValue(-200,200)},
-                    0.25f, {0,220,180,255} });
+                    0.25f, {0,220,180,255} );
         }
 
         // ── Hold click: carga heavy ──
@@ -392,9 +393,9 @@ void Ropera::Update() {
             dashCooldown   = dashMaxCD;
             attackPhase = AttackPhase::NONE;
             for (int k = 0; k < 8; k++)
-                particles.push_back({ position,
+                Graphics::VFXSystem::GetInstance().SpawnParticle( position,
                     {(float)GetRandomValue(-200,200),(float)GetRandomValue(-200,200)},
-                    0.25f, {0,220,180,255} });
+                    0.25f, {0,220,180,255} );
         }
         break;
     }
