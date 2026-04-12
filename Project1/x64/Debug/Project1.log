@@ -1,7 +1,0 @@
-﻿  main.cpp
-C:\Users\jouma\source\repos\Project1\main.cpp(127,67): warning C4244: 'argumento': conversión de 'int' a 'float'; posible pérdida de datos
-C:\Users\jouma\source\repos\Project1\main.cpp(252,64): warning C4838: la conversión de 'int' en 'float' requiere una conversión de restricción
-C:\Users\jouma\source\repos\Project1\main.cpp(252,64): warning C4244: 'inicializando': conversión de 'int' a 'float'; posible pérdida de datos
-C:\Users\jouma\source\repos\Project1\main.cpp(360,3): error C2143: error de sintaxis: falta ';' delante de '++'
-C:\Users\jouma\source\repos\Project1\main.cpp(360,2): error C4430: falta el especificador de tipo; se presupone int. Nota: C++ no admite default-int
-C:\Users\jouma\source\repos\Project1\main.cpp(360,3): error C2059: error de sintaxis: '++'

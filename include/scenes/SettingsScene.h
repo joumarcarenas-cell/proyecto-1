@@ -40,6 +40,7 @@ private:
     Rectangle m_btnRes900{};
     Rectangle m_btnRes1080{};
     Rectangle m_btnFullscreen{};
+    Rectangle m_btnCursorToggle{}; // Nueva: Botón para alternar cursor
 
     // Helper: dibuja y gestiona un botón de reasignación de tecla
     void DrawRebindRow(const char* label, int* key, int y);

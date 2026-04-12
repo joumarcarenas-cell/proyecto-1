@@ -3,33 +3,33 @@
 // =====================================================================
 // SceneManager.h - Singleton Gestor de Escenas
 // =====================================================================
-// Maneja la escena activa y las transiciones entre escenas usando
+// Maneja la escena activa y las transiciones con Fade In/Out usando
 // unique_ptr para garantizar que no haya fugas de memoria.
 //
-// INTEGRACIÓN EN main.cpp:
+// INTEGRACION EN main.cpp (sin cambios necesarios):
 //
 //   while (!WindowShouldClose()) {
 //       float dt = GetFrameTime();
 //       SceneManager::Get().Update(dt);
 //       BeginDrawing();
 //           ClearBackground({25, 30, 40, 255});
-//           SceneManager::Get().Draw();
+//           SceneManager::Get().Draw();   // fade overlay incluido aqui
 //       EndDrawing();
 //   }
 //   SceneManager::Get().Shutdown();
 //
-// Para cambiar de escena desde cualquier lugar del código:
-//   SceneManager::Get().ChangeScene(std::make_unique<GameplayScene>(player, boss));
+// Para cambiar de escena desde cualquier lugar:
+//   SceneManager::Get().ChangeScene(std::make_unique<GameplayScene>(...));
 // =====================================================================
 
 #include "Scene.h"
 #include <memory>
+#include <raylib.h>
 
 namespace Scenes {
 
 class SceneManager {
 public:
-    // Acceso global al singleton.
     static SceneManager& Get() {
         static SceneManager instance;
         return instance;
@@ -38,36 +38,27 @@ public:
     SceneManager(const SceneManager&) = delete;
     SceneManager& operator=(const SceneManager&) = delete;
 
-    // Cambia a una nueva escena:
-    // 1. Llama a Unload() de la escena anterior (libera sus recursos).
-    // 2. El unique_ptr destruye automáticamente la escena anterior.
-    // 3. Llama a Init() de la nueva escena.
+    // ── Cambio de escena con Fade Out -> Swap -> Fade In ─────────────
+    // La pantalla se oscurece, se hace el swap cuando esta completamente
+    // negra, y luego regresa la imagen. Las escenas no saben nada del fade.
     void ChangeScene(std::unique_ptr<Scene> newScene) {
-        // Si hay escena activa, la descargamos limpiamente.
-        if (m_currentScene) {
-            m_currentScene->Unload();
+        if (m_fadeState != FadeState::NONE) {
+            // Ya hay un fade en curso: empalar el pedido (el ultimo gana)
+            m_pendingScene = std::move(newScene);
+            return;
         }
-        // El move transfiere la propiedad; el destructor del unique_ptr
-        // anterior libera la memoria en cuanto m_currentScene se reasigna.
-        m_currentScene = std::move(newScene);
-        if (m_currentScene) {
-            m_currentScene->Init();
-        }
+        m_pendingScene = std::move(newScene);
+        m_fadeState    = FadeState::FADE_OUT;
+        m_fadeAlpha    = 0.0f;
     }
 
-    // Permite superponer una escena de pausa SIN destruir la anterior.
-    // La GameplayScene sigue en memoria; la PauseScene se dibuja encima.
+    // Overlay de pausa: SIN fade (la pausa debe ser instantanea)
     void PushOverlay(std::unique_ptr<Scene> overlay) {
-        if (m_overlay) {
-            m_overlay->Unload();
-        }
+        if (m_overlay) m_overlay->Unload();
         m_overlay = std::move(overlay);
-        if (m_overlay) {
-            m_overlay->Init();
-        }
+        if (m_overlay) m_overlay->Init();
     }
 
-    // Elimina el overlay de pausa y regresa a la escena base.
     void PopOverlay() {
         if (m_overlay) {
             m_overlay->Unload();
@@ -76,28 +67,30 @@ public:
     }
 
     bool HasOverlay() const { return m_overlay != nullptr; }
+    bool IsFading()   const { return m_fadeState != FadeState::NONE; }
 
-    // Delegados del bucle principal.
+    // ── Update ────────────────────────────────────────────────────────
     void Update(float dt) {
+        UpdateFade(dt);
+
         if (m_overlay) {
             m_overlay->Update(dt);
         } else if (m_currentScene) {
-            m_currentScene->Update(dt);
+            // Congelar el mundo durante FADE_OUT (evita que el juego avance
+            // mientras la camara esta entrando en negro)
+            if (m_fadeState != FadeState::FADE_OUT)
+                m_currentScene->Update(dt);
         }
     }
 
+    // ── Draw ──────────────────────────────────────────────────────────
     void Draw() {
-        // Siempre dibujamos la escena base (se ve debajo del overlay).
-        if (m_currentScene) {
-            m_currentScene->Draw();
-        }
-        // Si existe un overlay (ej: PauseScene), se dibuja encima.
-        if (m_overlay) {
-            m_overlay->Draw();
-        }
+        if (m_currentScene) m_currentScene->Draw();
+        if (m_overlay)      m_overlay->Draw();
+        DrawFadeOverlay();   // siempre la ultima capa, encima de todo
     }
 
-    // Limpieza final al cerrar la ventana.
+    // ── Shutdown ──────────────────────────────────────────────────────
     void Shutdown() {
         PopOverlay();
         if (m_currentScene) {
@@ -106,16 +99,51 @@ public:
         }
     }
 
-    // Gestionar la salida del juego
     void Quit() { m_shouldExit = true; }
     bool ShouldExit() const { return m_shouldExit; }
 
 private:
     SceneManager() = default;
 
-    std::unique_ptr<Scene> m_currentScene; // Escena principal activa
-    std::unique_ptr<Scene> m_overlay;     // Escena superpuesta (pausa, etc.)
-    bool m_shouldExit = false;
+    // ── Maquina de fade ───────────────────────────────────────────────
+    enum class FadeState { NONE, FADE_OUT, FADE_IN };
+
+    static constexpr float FADE_DURATION = 0.30f; // segundos por direccion
+
+    void UpdateFade(float dt) {
+        if (m_fadeState == FadeState::FADE_OUT) {
+            m_fadeAlpha += dt / FADE_DURATION;
+            if (m_fadeAlpha >= 1.0f) {
+                m_fadeAlpha = 1.0f;
+                // Pantalla completamente negra: swap seguro de escena
+                if (m_currentScene) m_currentScene->Unload();
+                m_currentScene = std::move(m_pendingScene);
+                if (m_currentScene) m_currentScene->Init();
+                m_fadeState = FadeState::FADE_IN;
+            }
+
+        } else if (m_fadeState == FadeState::FADE_IN) {
+            m_fadeAlpha -= dt / FADE_DURATION;
+            if (m_fadeAlpha <= 0.0f) {
+                m_fadeAlpha = 0.0f;
+                m_fadeState = FadeState::NONE;
+            }
+        }
+    }
+
+    void DrawFadeOverlay() const {
+        if (m_fadeAlpha > 0.0f)
+            DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(),
+                          Fade(BLACK, m_fadeAlpha));
+    }
+
+    // ── Estado ────────────────────────────────────────────────────────
+    std::unique_ptr<Scene> m_currentScene; // escena principal activa
+    std::unique_ptr<Scene> m_overlay;      // pausa/settings (encima)
+    std::unique_ptr<Scene> m_pendingScene; // esperando el swap tras fade
+    FadeState m_fadeState = FadeState::NONE;
+    float     m_fadeAlpha = 0.0f;
+    bool      m_shouldExit = false;
 };
 
 } // namespace Scenes

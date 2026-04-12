@@ -5,7 +5,7 @@
 #include "include/scenes/SceneManager.h"
 #include "include/scenes/CharacterSelectScene.h"
 #include "include/scenes/SettingsScene.h"
-#include "entities.h"
+#include "../entities.h"
 #include <raylib.h>
 #include <raymath.h>
 #include <cmath>
@@ -80,9 +80,9 @@ void MainMenuScene::Draw() {
         float r     = 350.0f + 80.0f * sinf(m_bgTime * 0.5f + i);
         float cx    = sw * 0.5f + cosf(angle) * 300.0f;
         float cy    = sh * 0.5f + sinf(angle) * 180.0f;
-        Color c     = { (unsigned char)(80 + 40 * sinf(i)),
+        Color c     = { (unsigned char)(80.0f + 40.0f * sinf((float)i)),
                         0,
-                        (unsigned char)(160 + 60 * cosf(i + m_bgTime)),
+                        (unsigned char)(160.0f + 60.0f * cosf((float)i + m_bgTime)),
                         30 };
         DrawCircleGradient((int)cx, (int)cy, r, c, {0, 0, 0, 0});
     }

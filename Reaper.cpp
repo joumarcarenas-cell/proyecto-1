@@ -27,7 +27,7 @@ void Reaper::Update() {
 
     // --- Cooldowns globales ---
     if (hitFlashTimer > 0) hitFlashTimer -= dt;
-    if (dashCooldown > 0) dashCooldown -= dt;
+    UpdateDash(dt);
     if (qCooldown    > 0) qCooldown    -= dt;
     if (eCooldown    > 0) eCooldown    -= dt;
     if (ultCooldown  > 0) ultCooldown  -= dt;
@@ -149,7 +149,7 @@ void Reaper::Update() {
             }
 
             // --- Dash (Blink) ---
-            if (IsKeyPressed(controls.dash) && dashCooldown <= 0) {
+            if (IsKeyPressed(controls.dash) && CanDash()) {
                 Vector2 blinkDir = facing;
                 {
                     Vector2 move2 = {0,0};
@@ -171,7 +171,7 @@ void Reaper::Update() {
                 }
                 position     = newPos;
                 state        = ReaperState::DASHING;
-                dashCooldown = 1.8f;
+                UseDash();
             }
 
             // --- Habilidad Q: Ground Bursts secuenciales ---
@@ -242,7 +242,7 @@ void Reaper::Update() {
             }
         }
         // Cancelar con dash
-        if (IsKeyPressed(controls.dash) && dashCooldown <= 0) {
+        if (IsKeyPressed(controls.dash) && CanDash()) {
             Vector2 newPos = Vector2Add(position, Vector2Scale(facing, blinkDistance));
             if (!InsideArena(newPos, radius)) {
                 float safeLen = 0.0f;
@@ -254,7 +254,7 @@ void Reaper::Update() {
             position     = newPos;
             state        = ReaperState::DASHING;
             attackPhase  = AttackPhase::NONE;
-            dashCooldown = 1.8f;
+            UseDash();
         }
         break;
     }
@@ -390,7 +390,7 @@ void Reaper::Update() {
                 attackPhaseTimer = combo[comboStep].startup * 0.65f; // attackMult buffed
                 comboTimer       = 1.2f;
             }
-            if (IsKeyPressed(controls.dash) && dashCooldown <= 0) {
+            if (IsKeyPressed(controls.dash) && CanDash()) {
                 Vector2 blinkDir = (Vector2Length(move) > 0) ? move : facing;
                 Vector2 newPos   = Vector2Add(position, Vector2Scale(blinkDir, blinkDistance));
                 if (!InsideArena(newPos, radius)) {
@@ -401,7 +401,7 @@ void Reaper::Update() {
                 }
                 position     = newPos;
                 state        = ReaperState::DASHING;
-                dashCooldown = 1.8f;
+                UseDash();
             }
         }
         break;
@@ -455,7 +455,9 @@ void Reaper::Reset(Vector2 pos) {
     buffTimer   = 0.0f;
     isBuffed    = false;
     qCooldown   = 0.0f;
-    dashCooldown = 0.0f;
+    dashCharges = maxDashCharges;
+    dashCooldown1 = 0.0f;
+    dashCooldown2 = 0.0f;
     eCooldown   = 0.0f;
     comboStep = 0;
     prevReaperState = ReaperState::NORMAL;
@@ -565,10 +567,11 @@ void Reaper::CheckCollisions(Enemy& boss) {
 
 std::vector<AbilityInfo> Reaper::GetAbilities() const {
     std::vector<AbilityInfo> abs;
-    abs.push_back({ "DASH", dashCooldown, 1.8f, 0.0f, dashCooldown <= 0, {180, 0, 255, 255} });
-    abs.push_back({ "Q Sangre", qCooldown, 8.0f, 25.0f, qCooldown <= 0 && energy >= 25.0f, {220, 0, 255, 255} });
-    abs.push_back({ "E Orbes", eCooldown, 12.0f, 40.0f, eCooldown <= 0 && energy >= 40.0f, {255, 60, 255, 255} });
-    abs.push_back({ "R Ult", ultCooldown, 25.0f, 80.0f, ultCooldown <= 0 && energy >= 80.0f, {0, 200, 255, 255} });
+    float currentDashCD = (dashCooldown1 > 0 && dashCooldown2 > 0) ? fminf(dashCooldown1, dashCooldown2) : ((dashCooldown1 > 0) ? dashCooldown1 : dashCooldown2);
+    abs.push_back({ TextFormat("DASH [%d]", dashCharges), currentDashCD, dashMaxCD, 0.0f, CanDash(), {180, 0, 255, 255}, ResourceManager::texBoomerang /* Placeholder for Dash */ });
+    abs.push_back({ "Q Sangre", qCooldown, 8.0f, 25.0f, qCooldown <= 0 && energy >= 25.0f, {220, 0, 255, 255}, ResourceManager::reaperQ });
+    abs.push_back({ "E Orbes", eCooldown, 12.0f, 40.0f, eCooldown <= 0 && energy >= 40.0f, {255, 60, 255, 255}, ResourceManager::reaperE });
+    abs.push_back({ "R Ult", ultCooldown, 25.0f, 80.0f, ultCooldown <= 0 && energy >= 80.0f, {0, 200, 255, 255}, ResourceManager::reaperR });
     return abs;
 }
 
@@ -893,6 +896,6 @@ void Reaper::Draw() {
             DrawCircleV(p.trail[i], pRad * ts * 0.7f, Fade(pCol, 0.4f * ts));
         }
         DrawCircleV(p.position, pRad, pCol);
-        DrawCircleLines((int)p.position.x, (int)p.position.y, (int)(pRad + 2), Fade(WHITE, 0.6f));
+        DrawCircleLines((int)p.position.x, (int)p.position.y, pRad + 2.0f, Fade(WHITE, 0.6f));
     }
 }

@@ -164,7 +164,7 @@ void Ropera::Update() {
 
     // ── Cooldowns globales ────────────────────────────
     if (hitFlashTimer > 0) hitFlashTimer -= dt;
-    if (dashCooldown > 0) dashCooldown -= dt;
+    UpdateDash(dt);
     if (qCooldown    > 0) qCooldown    -= dt;
     if (eCooldown    > 0) eCooldown    -= dt;
     if (ultCooldown  > 0) ultCooldown  -= dt;
@@ -205,7 +205,7 @@ void Ropera::Update() {
         
         // Estela de particulas durante el dash
         if (GetRandomValue(0, 100) < 60) {
-            Graphics::VFXSystem::GetInstance().SpawnParticle( position, {0,0}, 0.2f, Fade({0, 220, 180, 255}, 0.5f) );
+            Graphics::SpawnDashTrail(position);
         }
         return;
     }
@@ -242,13 +242,13 @@ void Ropera::Update() {
         if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
 
         // ── Dash (SPACE) – independiente, i-frames reales ──
-        if (IsKeyPressed(controls.dash) && dashCooldown <= 0) {
+        if (IsKeyPressed(controls.dash) && CanDash()) {
             // Direccion: WASD si se mueve, si no facing
             Vector2 bdir = (Vector2Length(move) > 0) ? Vector2Normalize(move) : facing;
             velocity = Vector2Scale(bdir, 1400.0f); // Velocidad alta para el dash fisico
             state = RoperaState::DASHING;
             dashGraceTimer = 0.15f; // Duracion un poco mayor para recorrer distancia
-            dashCooldown   = dashMaxCD;
+            UseDash();
             // Explosion de particulas al iniciar
             for (int k = 0; k < 8; k++)
                 Graphics::VFXSystem::GetInstance().SpawnParticle( position,
@@ -266,7 +266,7 @@ void Ropera::Update() {
         if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON) && isCharging) {
             if (holdTimer >= 0.35f) {
                 // Ataque cargado – consume cooldown de dash
-                dashCooldown      = dashMaxCD;
+                if (CanDash()) UseDash();
                 velocity          = Vector2Scale(facing, 1500.0f);
                 state             = RoperaState::HEAVY_ATTACK;
                 attackPhase       = AttackPhase::STARTUP;
@@ -384,13 +384,13 @@ void Ropera::Update() {
         }
 
         // ── Dash cancela el combo ──
-        if (IsKeyPressed(controls.dash) && dashCooldown <= 0) {
+        if (IsKeyPressed(controls.dash) && CanDash()) {
             Vector2 aim2 = Vector2Subtract(targetAim, position);
             Vector2 bdir = (Vector2Length(aim2) > 0) ? Vector2Normalize(aim2) : facing;
             velocity = Vector2Scale(bdir, 1400.0f);
             state = RoperaState::DASHING;
             dashGraceTimer = 0.15f;
-            dashCooldown   = dashMaxCD;
+            UseDash();
             attackPhase = AttackPhase::NONE;
             for (int k = 0; k < 8; k++)
                 Graphics::VFXSystem::GetInstance().SpawnParticle( position,
@@ -480,12 +480,24 @@ void Ropera::Update() {
         else velocity = {0,0};
     }
 
+    // ── Animación del Sprite (LISTO PARA NUEVO SPRITE) ────────
+    // currentFrameY = ... define aquí la fila de la animación actual
+    // currentFrameX = (currentFrameX + 1) % MAX_FRAMES
+    frameTimer += dt;
+    /*
+    if (frameTimer >= anim.spd) {
+        frameTimer = 0;
+        currentFrameX = (currentFrameX + 1) % MAX_FRAMES;
+    }
+    */
+
     // ── Combo timeout ─────────────────────────────────
     if (state != RoperaState::ATTACKING && comboTimer > 0) {
         comboTimer -= dt;
         if (comboTimer <= 0) comboStep = 0;
     }
 }
+
 
 // =====================================================
 // RESET
@@ -499,7 +511,8 @@ void Ropera::Reset(Vector2 pos) {
     attackPhase       = AttackPhase::NONE;
     comboStep         = 0; comboTimer = 0;
     hasHit            = false; heavyHasHit = false;
-    dashCooldown      = 0; dashGraceTimer = 0;
+    dashCharges       = maxDashCharges; dashCooldown1 = 0.0f; dashCooldown2 = 0.0f; 
+    dashGraceTimer = 0;
     qCooldown         = 0; eCooldown = 0; ultCooldown = 0;
     eBuffTimer        = 0; eBuffActive = false;
     moveSpeedBuffTimer = 0;
@@ -662,8 +675,9 @@ bool Ropera::CheckQCollision(Enemy& enemy, int slashIdx) {
 // =====================================================
 std::vector<AbilityInfo> Ropera::GetAbilities() const {
     std::vector<AbilityInfo> abs;
-    abs.push_back({ "DASH",    dashCooldown, dashMaxCD,    0.0f,
-                    dashCooldown <= 0, {80, 200, 220, 255} });
+    float currentDashCD = (dashCooldown1 > 0 && dashCooldown2 > 0) ? fminf(dashCooldown1, dashCooldown2) : ((dashCooldown1 > 0) ? dashCooldown1 : dashCooldown2);
+    abs.push_back({ TextFormat("DASH [%d]", dashCharges), currentDashCD, dashMaxCD,    0.0f,
+                    CanDash(), {80, 200, 220, 255} });
     abs.push_back({ "Q Tajos", qCooldown,    qMaxCooldown, 20.0f,
                     qCooldown <= 0 && energy >= 20.0f && !ultActive, {0, 220, 180, 255} });
     abs.push_back({ "E Furia", eCooldown,    eMaxCooldown, 30.0f,
@@ -702,14 +716,153 @@ void Ropera::Draw() {
                        radius*(ultActive ? 3.8f : 1.9f),
                        Fade(ac, ap*(ultActive?0.9f:0.5f)), Fade(ac,0));
 
-    // ── Cuerpo ────────────────────────────────────────
-    Color bc = (hitFlashTimer > 0) ? WHITE
-             : ultActive   ? Color{255,150,30,255}
-             : eBuffActive ? Color{50,255,170,255}
-             : state == RoperaState::DASHING ? Color{200,255,245,255}
-             :               Color{0,180,160,255};
-    DrawCircleV({position.x, position.y-20}, radius, bc);
-    DrawCircleLines((int)position.x,(int)position.y-20,radius-2,Fade(WHITE,0.55f));
+    // ── Cuerpo (Sprite) ───────────────────────────────
+        {
+        Texture2D activeTex = ResourceManager::roperaIdle;
+        
+        // 1. Determinar Textura Activa
+        if (hp <= 0) {
+            activeTex = ResourceManager::roperaDeath;
+        } else if (hitFlashTimer > 0) {
+            activeTex = ResourceManager::roperaHit;
+        } else if (state == RoperaState::DASHING) {
+            activeTex = ResourceManager::roperaDash;
+        } else if (state == RoperaState::CASTING_Q) {
+            activeTex = ResourceManager::roperaTajoDoble;
+        } else if (state == RoperaState::HEAVY_ATTACK) {
+            activeTex = ResourceManager::roperaHeavy;
+        } else if (state == RoperaState::ATTACKING) {
+            if (comboStep == 0 || comboStep == 1) activeTex = ResourceManager::roperaAttack1;
+            else activeTex = ResourceManager::roperaAttack3;
+        } else {
+            // NORMAL state
+            if (Vector2Length(velocity) > 20.0f) {
+                activeTex = ResourceManager::roperaRun;
+            } else {
+                activeTex = ResourceManager::roperaIdle;
+            }
+        }
+        
+        // 2. Determinar numero de frames de forma dinámica
+        int numFrames = 1;
+        Image* animSource = nullptr;
+
+        if (state == RoperaState::CASTING_Q) {
+            numFrames = ResourceManager::roperaTajoFrames;
+            animSource = &ResourceManager::roperaTajoDobleIm;
+        } else if (hp <= 0) {
+            // Death is still PNG
+            if (activeTex.height > 0) numFrames = activeTex.width / activeTex.height;
+        } else if (hitFlashTimer > 0) {
+            // Hit is still PNG
+            if (activeTex.height > 0) numFrames = activeTex.width / activeTex.height;
+        } else if (state == RoperaState::DASHING) {
+            numFrames = ResourceManager::roperaDashFrames;
+            animSource = &ResourceManager::roperaDashIm;
+        } else if (state == RoperaState::HEAVY_ATTACK) {
+            numFrames = ResourceManager::roperaHeavyFrames;
+            animSource = &ResourceManager::roperaHeavyIm;
+        } else if (state == RoperaState::ATTACKING) {
+            if (comboStep == 0 || comboStep == 1) {
+                numFrames = ResourceManager::roperaAttack1Frames;
+                animSource = &ResourceManager::roperaAttack1Im;
+            } else {
+                numFrames = ResourceManager::roperaAttack3Frames;
+                animSource = &ResourceManager::roperaAttack3Im;
+            }
+        } else {
+            // NORMAL
+            if (Vector2Length(velocity) > 20.0f) {
+                numFrames = ResourceManager::roperaRunFrames;
+                animSource = &ResourceManager::roperaRunIm;
+            } else {
+                numFrames = ResourceManager::roperaIdleFrames;
+                animSource = &ResourceManager::roperaIdleIm;
+            }
+        }
+        
+        if (numFrames <= 0) numFrames = 1;
+
+        // 3. Calcular qué frame mostrar
+        int currentFrame = 0;
+        
+        if (state == RoperaState::NORMAL && animSource != nullptr) {
+            // Loop de animacion por tiempo para Idle/Run
+            float animSpeed = (activeTex.id == ResourceManager::roperaRun.id) ? 0.08f : 0.12f;
+            currentFrame = (int)(t / animSpeed) % numFrames;
+        } else {
+            // Animacion basada en progreso del ataque/estado
+            float progress = 0.0f;
+            
+            if (state == RoperaState::ATTACKING) {
+                float aMult = (eBuffActive ? 0.58f : (ultActive ? 0.50f : 1.0f));
+                float st = combo[comboStep].startup * aMult;
+                float ac = combo[comboStep].active * aMult;
+                float rc = combo[comboStep].recovery * aMult;
+                float tot = st + ac + rc;
+                
+                float elapsed = 0.0f;
+                if (attackPhase == AttackPhase::STARTUP) elapsed = st - attackPhaseTimer;
+                else if (attackPhase == AttackPhase::ATTACK_ACTIVE) elapsed = st + (ac - attackPhaseTimer);
+                else if (attackPhase == AttackPhase::RECOVERY) elapsed = st + ac + (rc - attackPhaseTimer);
+                
+                progress = elapsed / tot;
+            } else if (state == RoperaState::HEAVY_ATTACK) {
+                float tot = 0.10f + 0.18f + 0.40f;
+                float elapsed = 0.0f;
+                if (attackPhase == AttackPhase::STARTUP) elapsed = 0.10f - attackPhaseTimer;
+                else if (attackPhase == AttackPhase::ATTACK_ACTIVE) elapsed = 0.10f + (0.18f - attackPhaseTimer);
+                else if (attackPhase == AttackPhase::RECOVERY) elapsed = 0.10f + 0.18f + (0.40f - attackPhaseTimer);
+                progress = elapsed / tot;
+            } else if (state == RoperaState::DASHING) {
+                progress = 1.0f - (dashGraceTimer / 0.15f);
+            } else if (state == RoperaState::CASTING_Q) {
+                if (qSlashIndex == 0) progress = 1.0f - (qSlashActiveTimer / 0.18f) * 0.5f;
+                else progress = 0.5f + (1.0f - (qSlashActiveTimer / 0.18f)) * 0.5f;
+            }
+            
+            progress = std::clamp(progress, 0.0f, 0.99f);
+            currentFrame = (int)(progress * numFrames);
+        }
+
+        // --- ACTUALIZACION TEXTURA DESDE GIF ---
+        if (animSource != nullptr && numFrames > 0) {
+            unsigned int nextFrameDataOffset = animSource->width * animSource->height * 4 * currentFrame;
+            UpdateTexture(activeTex, ((unsigned char *)animSource->data) + nextFrameDataOffset);
+            currentFrame = 0; 
+            numFrames = 1;    
+        }
+
+        // 4. Dibujar textura
+        if (activeTex.id != 0) {
+            float frameW = (float)activeTex.width / numFrames;
+            float frameH = (float)activeTex.height;
+            
+            // Voltear horizontalmente segun el facing (asumiendo que miran a la derecha por defecto)
+            float flipMult = (facing.x < 0) ? -1.0f : 1.0f;
+            
+            Rectangle src = { (float)currentFrame * frameW, 0.0f, frameW * flipMult, frameH };
+            
+            // Origen centrado en la base
+            float scale = 1.5f; // Ajusta esto segun el tamano deseado de tu personaje
+            Rectangle dest = { position.x, position.y, frameW * scale, frameH * scale };
+            Vector2 orig = { (frameW * scale) / 2.0f, (frameH * scale) - 10.0f }; // -10px de offset para encajar pies en centro
+            
+            Color tint = WHITE;
+            if (hitFlashTimer > 0) tint = {255, 100, 100, 255};
+            else if (ultActive)    tint = {255, 220, 100, 255};
+            else if (eBuffActive)  tint = {180, 255, 200, 255};
+            
+            DrawTexturePro(activeTex, src, dest, orig, 0.0f, tint);
+            
+        } else {
+            // Fallback primitivo si falla carga
+            Color tint = WHITE;
+            if (hitFlashTimer > 0) tint = {255, 100, 100, 255};
+            DrawCircleV({position.x, position.y - 20}, radius, tint);
+        }
+    }
+
 
     // ── Visual Combo ──────────────────────────────────
     if (state == RoperaState::ATTACKING) {
@@ -763,7 +916,7 @@ void Ropera::Draw() {
         DrawCircleLines((int)position.x,(int)position.y-20,
                         radius+8.0f+20.0f*(1.0f-cp), Fade({0,220,180,255},cp));
         if (cp >= 1.0f) {
-            Color rc = (dashCooldown<=0) ? Color{0,255,180,255} : Color{255,200,0,255};
+            Color rc = CanDash() ? Color{0,255,180,255} : Color{255,200,0,255};
             if (sinf(t*30.0f)>0) DrawCircleLines((int)position.x,(int)position.y-20,radius+14,rc);
         }
     }

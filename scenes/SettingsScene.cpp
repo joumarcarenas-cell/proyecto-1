@@ -3,9 +3,12 @@
 // =====================================================================
 #include "include/scenes/SettingsScene.h"
 #include "include/scenes/SceneManager.h"
-#include "entities.h"
+#include "../entities.h"
 #include <raylib.h>
 #include <cmath>
+
+// ─── Externas (main.cpp) ──────────────────────────────────────────────────
+extern bool showCursorInGame;
 
 namespace Scenes {
 
@@ -16,11 +19,12 @@ void SettingsScene::Init() {
     m_rebindingName = "";
 
     // Layout de botones
-    m_btnBack       = { 20.0f,  20.0f,  130.0f, 40.0f };
-    m_btnRes720     = { 300.0f, 110.0f, 100.0f, 40.0f };
-    m_btnRes900     = { 410.0f, 110.0f, 100.0f, 40.0f };
-    m_btnRes1080    = { 520.0f, 110.0f, 100.0f, 40.0f };
-    m_btnFullscreen = { 650.0f, 110.0f, 220.0f, 40.0f };
+    m_btnBack        = { 20.0f,  20.0f,  130.0f, 40.0f };
+    m_btnRes720      = { 300.0f, 110.0f, 100.0f, 40.0f };
+    m_btnRes900      = { 410.0f, 110.0f, 100.0f, 40.0f };
+    m_btnRes1080     = { 520.0f, 110.0f, 100.0f, 40.0f };
+    m_btnFullscreen  = { 650.0f, 110.0f, 220.0f, 40.0f };
+    m_btnCursorToggle = { 650.0f, 160.0f, 220.0f, 40.0f };
 
     ShowCursor();
 }
@@ -66,6 +70,12 @@ void SettingsScene::Update(float /*dt*/) {
     if (CheckCollisionPointRec(mouse, m_btnFullscreen) &&
         IsMouseButtonPressed(MOUSE_LEFT_BUTTON))
         ToggleFullscreen();
+
+    // Alternar cursor en partida
+    if (CheckCollisionPointRec(mouse, m_btnCursorToggle) &&
+        IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+        showCursorInGame = !showCursorInGame;
+    }
 }
 
 // ─── Draw ─────────────────────────────────────────────────────────────────
@@ -115,6 +125,16 @@ void SettingsScene::Draw() {
     DrawText(fsLabel,
              (int)(m_btnFullscreen.x + m_btnFullscreen.width * 0.5f) - MeasureText(fsLabel, 18) / 2,
              (int)(m_btnFullscreen.y + 11), 18, WHITE);
+
+    // Botón Toggle Cursor
+    bool hovCursor = CheckCollisionPointRec(mouse, m_btnCursorToggle);
+    DrawRectangleRec(m_btnCursorToggle,
+                     hovCursor ? Color{30, 120, 30, 255} : DARKGRAY);
+    DrawRectangleLinesEx(m_btnCursorToggle, 1.5f, hovCursor ? WHITE : Fade(WHITE, 0.3f));
+    const char* curLabel = showCursorInGame ? "CURSOR: VISIBLE" : "CURSOR: OCULTO";
+    DrawText(curLabel,
+             (int)(m_btnCursorToggle.x + m_btnCursorToggle.width * 0.5f) - MeasureText(curLabel, 18) / 2,
+             (int)(m_btnCursorToggle.y + 11), 18, WHITE);
 
     // ── Sección Controles ───────────────────────────────────────────────
     DrawText("CONTROLES (Click para reasignar):", 100, 195, 20, LIGHTGRAY);

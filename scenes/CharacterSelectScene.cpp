@@ -2,7 +2,7 @@
 // CharacterSelectScene.cpp - Selección de Personaje estilo MK
 // =====================================================================
 #include "include/scenes/CharacterSelectScene.h"
-#include "entities.h"
+#include "../entities.h"
 #include "include/graphics/VFXSystem.h"
 #include "include/scenes/GameplayScene.h"
 #include "include/scenes/MainMenuScene.h"

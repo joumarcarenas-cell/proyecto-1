@@ -1,0 +1,40 @@
+# Visual Studio
+.vs/
+[Dd]ebug/
+[Rr]elease/
+x64/
+*.user
+*.aps
+*.idb
+*.dep
+*.obj
+*.res
+*.pch
+*.pdb
+*.ilk
+*.tlog
+*.lastbuildstate
+*.iobj
+*.ipdb
+*.exe
+*.dll
+
+# Raylib / Packages
+packages/
+
+# Assets (User requested code only)
+assets/
+*.png
+*.gif
+*.jpg
+*.jpeg
+*.wav
+*.mp3
+
+# Build outputs
+build/
+build_output.txt
+
+# VS code
+.vscode/
+.clangd/

@@ -1,0 +1,12 @@
+CompileFlags:
+  Add:
+    - --target=x86_64-w64-mingw32
+    - -std=c++17
+    - -I.
+    - -Iinclude
+    - -isystemC:/msys64/mingw64/include/c++/15.2.0
+    - -isystemC:/msys64/mingw64/include/c++/15.2.0/x86_64-w64-mingw32
+    - -isystemC:/msys64/mingw64/include/c++/15.2.0/backward
+    - -isystemC:/msys64/mingw64/include
+    - -isystemC:/msys64/mingw64/x86_64-w64-mingw32/include
+  Remove: [-W*, -fms-compatibility]

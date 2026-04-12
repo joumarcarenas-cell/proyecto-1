@@ -9,7 +9,7 @@
 #include "include/scenes/SceneManager.h"
 #include "include/scenes/MainMenuScene.h"
 #include "include/scenes/SettingsScene.h"
-#include "entities.h"
+#include "../entities.h"
 #include <raylib.h>
 #include <cmath>
 #include <memory>
