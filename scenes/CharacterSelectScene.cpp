@@ -1,19 +1,16 @@
 // =====================================================================
 // CharacterSelectScene.cpp - Selección de Personaje estilo MK
 // =====================================================================
-#include "include/scenes/CharacterSelectScene.h"
-#include "../entities.h"
-#include "include/graphics/VFXSystem.h"
-#include "include/scenes/GameplayScene.h"
-#include "include/scenes/MainMenuScene.h"
-#include "include/scenes/SceneManager.h"
+#include "../include/scenes/CharacterSelectScene.h"
+#include "../include/graphics/VFXSystem.h"
+#include "../include/scenes/GameplayScene.h"
+#include "../include/scenes/MainMenuScene.h"
+#include "../include/scenes/SceneManager.h"
 #include <cmath>
 #include <memory>
 #include <raylib.h>
 #include <raymath.h>
 
-// ─── Externas (definidas en main.cpp, fuera de namespace) ────────────────
-extern Enemy g_boss;
 extern float screenShake;
 // g_reaper, g_ropera and g_activePlayer are passed via constructor as
 // references
@@ -34,7 +31,7 @@ void CharacterSelectScene::Init() {
   m_characters.push_back(
       {"SEGADOR", "Maestro del sangrado", {180, 0, 255, 255}});
   m_characters.push_back({"ROPERA", "Duelista veloz", {0, 220, 180, 255}});
-  m_characters.push_back({"???", "Proximamente", {60, 60, 60, 180}});
+  m_characters.push_back({"MAGO", "Control elemental", {0, 180, 255, 255}});
   m_characters.push_back({"???", "Proximamente", {60, 60, 60, 180}});
   m_characters.push_back({"???", "Proximamente", {60, 60, 60, 180}});
   m_characters.push_back({"???", "Proximamente", {60, 60, 60, 180}});
@@ -80,29 +77,17 @@ void CharacterSelectScene::Update(float dt) {
     } else if (m_selectedIdx == 1) {
       m_ropera.Reset({2000, 2000});
       m_activePlayer = &m_ropera;
+    } else if (m_selectedIdx == 2) {
+      m_mage.Reset({2000, 2000});
+      m_activePlayer = &m_mage;
     }
-
-    // Reiniciar el boss para la nueva partida
-    g_boss.hp = g_boss.maxHp;
-    g_boss.position = g_boss.spawnPos;
-    g_boss.velocity = {0, 0};
-    g_boss.aiState = Enemy::AIState::IDLE;
-    g_boss.stateTimer = 1.0f;
-    g_boss.isDead = false;
-    g_boss.bleedTimer = 0;
-    g_boss.isBleeding = false;
-    g_boss.recentDamage = 0.0f;
-    g_boss.rocksSpawned = 0;
-    g_boss.rocksToSpawn = 0;
-    for (int i = 0; i < 5; i++)
-      g_boss.rocks[i].active = false;
 
     Graphics::VFXSystem::GetInstance().Clear();
     screenShake = 0.0f;
 
-    // Transición a GameplayScene
+    // Transición a GameplayScene (ahora gestiona su propia cola de jefes)
     SceneManager::Get().ChangeScene(
-        std::make_unique<GameplayScene>(m_activePlayer, g_boss));
+        std::make_unique<GameplayScene>(m_activePlayer));
   };
 
   if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
@@ -126,14 +111,14 @@ void CharacterSelectScene::Update(float dt) {
       float cx = gridX + col * (cardW + gapX);
       float cy = gridY + row * (cardH + gapY);
       Rectangle card = {cx, cy, cardW, cardH};
-      
+
       if (CheckCollisionPointRec(mousePos, card)) {
         // Al pasar el mouse, actualizamos el cursor visual
         if (m_cursorCol != col || m_cursorRow != row) {
           m_cursorCol = col;
           m_cursorRow = row;
         }
-        
+
         // Si hace click, confirmamos
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
           confirmSelection();
@@ -159,11 +144,11 @@ void CharacterSelectScene::Draw() {
 
   // Efecto de cuadrícula de perspectiva al fondo
   for (int i = 0; i < 20; i++) {
-    float y = (float)(sh / 20 * i);
+    float y = (float)sh / 20.0f * (float)i;
     DrawLineEx({0, y}, {(float)sw, y}, 1.0f, Fade({40, 40, 80, 255}, 0.3f));
   }
   for (int i = 0; i < 30; i++) {
-    float x = (float)(sw / 30 * i);
+    float x = (float)sw / 30.0f * (float)i;
     DrawLineEx({x, 0}, {x, (float)sh}, 1.0f, Fade({40, 40, 80, 255}, 0.3f));
   }
 

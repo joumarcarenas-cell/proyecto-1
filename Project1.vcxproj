@@ -131,7 +131,10 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="ElementalMage.cpp" />
+    <ClCompile Include="EliteEnemies.cpp" />
     <ClCompile Include="Enemy.cpp" />
+    <ClCompile Include="IsoMap.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="Reaper.cpp" />
     <ClCompile Include="Ropera.cpp" />
@@ -147,9 +150,11 @@
   <ItemGroup>
     <ClInclude Include="entities.h" />
     <ClInclude Include="include\Enemy.h" />
+    <ClInclude Include="include\ElementalMage.h" />
     <ClInclude Include="include\graphics\Animator.h" />
     <ClInclude Include="include\graphics\RenderManager.h" />
     <ClInclude Include="include\graphics\VFXSystem.h" />
+    <ClInclude Include="include\IsoMap.h" />
     <ClInclude Include="include\scenes\Scene.h" />
     <ClInclude Include="include\scenes\SceneManager.h" />
     <ClInclude Include="include\scenes\MainMenuScene.h" />

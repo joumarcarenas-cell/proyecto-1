@@ -3,12 +3,12 @@
 #      .\build.ps1 -Release  (Optimizado)
 param([switch]$Release)
 
-$Root   = $PSScriptRoot
-$Out    = "$Root\build\Debug\outDebug.exe"
-$Flags  = "-g -O0 -Wall"
+$Root = $PSScriptRoot
+$Out = "$Root\build\Debug\outDebug.exe"
+$Flags = "-g -O0 -Wall"
 
 if ($Release) {
-    $Out   = "$Root\build\Release\outRelease.exe"
+    $Out = "$Root\build\Release\outRelease.exe"
     $Flags = "-O2 -Wall -DNDEBUG"
 }
 
@@ -17,9 +17,12 @@ New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
 
 $Sources = @(
     "$Root\main.cpp",
+    "$Root\ElementalMage.cpp",
     "$Root\Enemy.cpp",
     "$Root\Reaper.cpp",
     "$Root\Ropera.cpp",
+    "$Root\IsoMap.cpp",
+    "$Root\EliteEnemies.cpp",
     "$Root\scenes\MainMenuScene.cpp",
     "$Root\scenes\CharacterSelectScene.cpp",
     "$Root\scenes\GameplayScene.cpp",
@@ -42,12 +45,14 @@ if ($LASTEXITCODE -eq 0) {
         $WshShell = New-Object -ComObject WScript.Shell
         $Shortcut = $WshShell.CreateShortcut($DesktopPath)
         $Shortcut.TargetPath = $Out
-        $Shortcut.WorkingDirectory = (Split-Path $Out) # Para que encuentre assets y DLLs
+        $Shortcut.WorkingDirectory = $Root # Point to root so it can find assets and DLLs
         $Shortcut.Save()
         Write-Host "[INFO] Acceso directo actualizado en el Escritorio." -ForegroundColor Cyan
-    } catch {
+    }
+    catch {
         Write-Host "[WARN] No se pudo crear el acceso directo: $($_.Exception.Message)" -ForegroundColor Yellow
     }
-} else {
+}
+else {
     Write-Host "`n[ERROR] Compilacion fallida (exit $LASTEXITCODE)" -ForegroundColor Red
 }

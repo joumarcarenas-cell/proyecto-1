@@ -4,173 +4,256 @@
 #include <string>
 #include <vector>
 
-enum class GamePhase { RUNNING, PAUSED, SETTINGS, REBINDING, GAME_OVER, CHAR_SELECT, VICTORY };
+enum class GamePhase {
+  RUNNING,
+  PAUSED,
+  SETTINGS,
+  REBINDING,
+  GAME_OVER,
+  CHAR_SELECT,
+  VICTORY
+};
 
 // --- REAPER STATES ---
 enum class ReaperState {
-    NORMAL,
-    ATTACKING,          // Combo de 3 hits pesados
-    CHARGING_HEAVY,     // Hold click: carga el heavy attack
-    HEAVY_ATTACK,       // El tajo frontal despues del mini-dash
-    DASHING,            // Blink (teletransporte)
-    CASTING_E,          // Lanzar orbes teledirigidos
-    LOCKED,             // Bloqueo duro durante cinematicas
-    ULT_PHASE3          // Buff post-ult
+  NORMAL,
+  ATTACKING,      // Combo de 3 hits pesados
+  CHARGING_HEAVY, // Hold click: carga el heavy attack
+  HEAVY_ATTACK,   // El tajo frontal despues del mini-dash
+  DASHING,        // Blink (teletransporte)
+  CASTING_E,      // Lanzar orbes teledirigidos
+  LOCKED,         // Bloqueo duro durante cinematicas
+  ULT_PHASE3      // Buff post-ult
 };
 
 // --- ROPERA STATES ---
 enum class RoperaState {
-    NORMAL,
-    ATTACKING,      // Combo de 3 fases
-    CHARGING_HEAVY, // Hold click: cargando
-    HEAVY_ATTACK,   // Super estocada frontal
-    DASHING,        // i-frames breves post-blink
-    CASTING_Q,      // Dos tajos rapidos Q
-    ULT_ACTIVE      // Modo Garras
+  NORMAL,
+  ATTACKING,      // Combo de 3 fases
+  CHARGING_HEAVY, // Hold click: cargando
+  HEAVY_ATTACK,   // Super estocada frontal
+  DASHING,        // i-frames breves post-blink
+  CASTING_Q,      // Dos tajos rapidos Q
+  ULT_ACTIVE      // Modo Garras
 };
 
-enum class CharacterType { REAPER, ROPERA };
+// --- MAGE STATES ---
+enum class MageState {
+  NORMAL,
+  ATTACKING,      
+  CHARGING_HEAVY, 
+  HEAVY_ATTACK,   
+  DASHING,        
+  CASTING_E,      
+  CHARGING_E,
+  CASTING_R,
+  LOCKED
+};
+
+// --- ELEMENTAL SYSTEM ---
+enum class ElementMode { NONE, WATER_ICE, LIGHTNING };
+
+enum class CharacterType { REAPER, ROPERA, MAGE };
 
 struct ControlScheme {
-    int dash = KEY_SPACE;
-    int boomerang = KEY_Q;
-    int berserker = KEY_E;
-    int ultimate = KEY_R;
+  int dash = KEY_SPACE;
+  int boomerang = KEY_Q;
+  int berserker = KEY_E;
+  int ultimate = KEY_R;
 };
 
 enum class AttackPhase { NONE, STARTUP, ATTACK_ACTIVE, RECOVERY };
 
 struct AttackFrame {
-    float range;
-    float angleWidth; 
-    float damage;
-    float startup;
-    float active;
-    float recovery;
-    float hitCooldown;
+  float range;
+  float angleWidth;
+  float damage;
+  float startup;
+  float active;
+  float recovery;
+  float hitCooldown;
 };
 
 // =====================================================
 // --- GROUND BURST (Habilidad Q del Reaper) ---
 // =====================================================
 struct GroundBurst {
-    Vector2 position;
-    float   radius;
-    float   lifetime;
-    float   maxLifetime;
-    bool    active;
-    bool    hasDealtDamage;
-    bool    isTip;
-    float   damage;
-    float   visualRadius;
+  Vector2 position;
+  Vector2 direction;
+  float radius;
+  float lifetime;
+  float maxLifetime;
+  bool active;
+  bool hasDealtDamage;
+  bool isTip;
+  float damage;
+  float visualRadius;
 
-    void Update(float dt) {
-        if (!active) return;
-        lifetime -= dt;
-        if (lifetime <= 0) { active = false; return; }
-        float expandT = fminf(1.0f - (lifetime / maxLifetime) * (maxLifetime / 0.08f), 1.0f);
-        visualRadius = radius * fminf(expandT + 0.1f, 1.0f);
+  void Update(float dt) {
+    if (!active)
+      return;
+    lifetime -= dt;
+    if (lifetime <= 0) {
+      active = false;
+      return;
     }
+    // Instant appearance at full radius (like Mage)
+    visualRadius = radius;
+  }
 
-    void Draw() const {
-        if (!active) return;
-        float alpha = (lifetime / maxLifetime);
-        Color c = isTip ? Color{255, 80, 255, 255} : Color{180, 0, 220, 255};
-        DrawCircleV(position, visualRadius, Fade(c, alpha * 0.5f));
-        DrawCircleLines((int)position.x, (int)position.y, visualRadius, Fade(WHITE, alpha * 0.8f));
-        if (isTip) {
-            DrawCircleLines((int)position.x, (int)position.y, visualRadius * 1.15f, Fade(c, alpha * 0.4f));
-        }
+  void Draw() const {
+    if (!active)
+      return;
+    float alpha = (lifetime / maxLifetime);
+    Color c = isTip ? Color{255, 80, 255, 255} : Color{180, 0, 220, 255};
+    Color cBg = Fade(c, alpha * 0.25f);
+    Color cLines = Fade(WHITE, alpha * 0.8f);
+
+    // Detección visual mejorada (Estilo anime/mago)
+    // 1. Círculo exterior con pulso sutil
+    DrawCircleLinesV(position, visualRadius, cLines);
+    DrawCircleLinesV(position, visualRadius + 2.0f, Fade(c, alpha * 0.4f));
+
+    // 2. Relleno suave que se desvanece
+    DrawCircleV(position, visualRadius, cBg);
+
+    // 3. Destello central si es el impacto inicial (primer 30% de vida)
+    if (alpha > 0.7f) {
+      float flashT = (alpha - 0.7f) / 0.3f;
+      DrawCircleV(position, visualRadius * 0.6f * flashT, Fade(WHITE, flashT * 0.6f));
     }
+  }
 };
 
 struct Projectile {
-    Vector2 position;
-    Vector2 startPos;
-    Vector2 direction;
-    float maxDistance;
-    bool returning;
-    bool active;
-    float damage;
-    bool isOrbital;
-    float orbitAngle;
-    bool isLastUltCharge;
-    
-    // --- REAPER EXTENSIONS ---
-    bool isHoming       = false; 
-    bool isShadow       = false; 
-    float homingStrength = 3.5f; 
-    float speed         = 1000.0f;
-    
-    // --- RASTRO (TRAIL) ---
-    Vector2 trail[8];
-    int trailCount = 0;
+  Vector2 position;
+  Vector2 startPos;
+  Vector2 direction;
+  float maxDistance;
+  bool returning;
+  bool active;
+  float damage;
+  bool isOrbital;
+  float orbitAngle;
+  bool isLastUltCharge;
+
+  // --- REAPER EXTENSIONS ---
+  bool isHoming = false;
+  bool isShadow = false;
+  float homingStrength = 3.5f;
+  float speed = 1000.0f;
+
+  // --- RASTRO (TRAIL) ---
+  Vector2 trail[8];
+  int trailCount = 0;
 };
 
 struct DamageText {
-    Vector2 position;
-    Vector2 velocity;
-    float life;
-    float maxLife;
-    int damage;
-    Color color;
+  Vector2 position;
+  Vector2 velocity;
+  float life;
+  float maxLife;
+  int damage;
+  Color color;
 
-    void Update(float dt) {
-        position = Vector2Add(position, Vector2Scale(velocity, dt));
-        life -= dt;
-    }
-    void Draw() {
-        if (life <= 0) return;
-        float alpha = life / maxLife;
-        Color c = color;
-        c.a = (unsigned char)(255.0f * alpha);
-        DrawText(TextFormat("%i", damage), (int)position.x, (int)position.y, 22, c);
-    }
+  void Update(float dt) {
+    position = Vector2Add(position, Vector2Scale(velocity, dt));
+    life -= dt;
+  }
+  void Draw() {
+    if (life <= 0)
+      return;
+    float alpha = life / maxLife;
+    Color c = color;
+    c.a = (unsigned char)(255.0f * alpha);
+    Color oc = BLACK;
+    oc.a = c.a;
+    int fs = 26; // Increased font size
+
+    const char* txt = TextFormat("%i", damage);
+    int px = (int)position.x;
+    int py = (int)position.y;
+    
+    // Outline
+    DrawText(txt, px - 2, py, fs, oc);
+    DrawText(txt, px + 2, py, fs, oc);
+    DrawText(txt, px, py - 2, fs, oc);
+    DrawText(txt, px, py + 2, fs, oc);
+    DrawText(txt, px - 1, py - 1, fs, oc);
+    DrawText(txt, px + 1, py + 1, fs, oc);
+    
+    // Text
+    DrawText(txt, px, py, fs, c);
+  }
 };
 
 struct AbilityInfo {
-    std::string label;
-    float cooldown;
-    float maxCooldown;
-    float energyCost;
-    bool ready;
-    Color color;
-    Texture2D icon;
+  std::string label;
+  float cooldown;
+  float maxCooldown;
+  float energyCost;
+  bool ready;
+  Color color;
+  Texture2D icon;
 };
 
 struct Destructible {
-    Vector2 position;
-    float   hp;
-    float   maxHp;
-    float   radius;
-    bool    isDead        = false;
-    float   respawnTimer  = 0.0f;
-    float   respawnTime   = 20.0f;
+  Vector2 position;
+  float hp;
+  float maxHp;
+  float radius;
+  bool isDead = false;
+  float respawnTimer = 0.0f;
+  float respawnTime = 20.0f;
 
-    bool TakeDamage(float dmg) {
-        if (isDead) return false;
-        hp -= dmg;
-        if (hp <= 0.0f) {
-            hp           = 0.0f;
-            isDead       = true;
-            respawnTimer = respawnTime;
-            return true;
-        }
-        return false;
+  bool TakeDamage(float dmg) {
+    if (isDead)
+      return false;
+    hp -= dmg;
+    if (hp <= 0.0f) {
+      hp = 0.0f;
+      isDead = true;
+      respawnTimer = respawnTime;
+      return true;
     }
+    return false;
+  }
 
-    void Update(float dt) {
-        if (isDead) {
-            respawnTimer -= dt;
-            if (respawnTimer <= 0.0f) {
-                isDead = false;
-                hp     = maxHp;
-            }
-        }
+  void Update(float dt) {
+    if (isDead) {
+      respawnTimer -= dt;
+      if (respawnTimer <= 0.0f) {
+        isDead = false;
+        hp = maxHp;
+      }
     }
+  }
 };
 
 // Global variables extern declarations
 extern bool isTimeStopped;
+extern float g_timeScale;
+extern double g_gameTime;
 extern float hitstopTimer;
 extern float screenShake;
+
+// --- ARENA HELPERS ---
+namespace Arena {
+inline bool IsInside(Vector2 pos, float radius) {
+  float dx = std::abs(pos.x - 2000.0f);
+  float dy = std::abs(pos.y - 2000.0f);
+  return (dx + 2.0f * dy) <= (1400.0f - radius * 2.236f);
+}
+
+inline Vector2 GetClampedPos(Vector2 pos, float radius) {
+  float dx = pos.x - 2000.0f;
+  float dy = pos.y - 2000.0f;
+  float R = 1400.0f - radius * 2.236f;
+  float current = std::abs(dx) + 2.0f * std::abs(dy);
+  if (current > R) {
+    float scale = R / current;
+    return {2000.0f + dx * scale, 2000.0f + dy * scale};
+  }
+  return pos;
+}
+} // namespace Arena
