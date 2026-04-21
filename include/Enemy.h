@@ -24,16 +24,16 @@ class Player;
 
 class Enemy : public Boss {
 public:
+  float previousHp = 0.0f;
   // ── Parametros de dificultad ─────────────────────────────────────
   float reactionSpeed = 0.5f;
   float baseAttackCooldown = 1.5f;
-  float aggressionLevel = 1.15f; // Aumentado ligeramente para mas agresividad
+  float aggressionLevel = 1.45f; // Aumentado significativamente para mas agresividad
 
   // ── Estados de IA ─────────────────────────────────────────────────
   enum class AIState {
     IDLE,
     CHASE,
-    ORBITING,
     STAGGERED,
     EVADE,
     ATTACK_BASIC,
@@ -42,8 +42,13 @@ public:
     ATTACK_HEAVY,
     ATTACK_ROCKS,
     ATTACK_JUMP,
-    AVALANCHE_START, // Moviendose a la esquina
-    AVALANCHE_ACTIVE // Golpeando el suelo e invulnerable
+    AVALANCHE_START,
+    AVALANCHE_ACTIVE,
+    CENTER_ROCKS_START,
+    CENTER_ROCKS_LIFT,
+    CENTER_ROCKS_THROW,
+    DESPERATION_START,
+    DESPERATION_ACTIVE
   };
   AIState aiState = AIState::IDLE;
   AIState previousAIState = AIState::IDLE;
@@ -57,10 +62,38 @@ public:
   int dashCharges = 0;
   bool mixupDecided = false;
   
-  // ── Avalancha (Evento unico al 25% HP) ───────────────────────────
+  // ── Fases y Eventos Centrales ───────────────────────────
+  bool phase75Triggered = false;
+  bool phase50Triggered = false;
   bool avalancheTriggered = false;
+  bool desperationTriggered = false;
   float avalancheTimer = 0.0f;
   float waveSpawnTimer = 0.0f;
+  
+  float phaseTimer = 0.0f; // Multi-uso para las canalizaciones
+  float rockThrowDelay = 0.0f;
+  float subBurstTimer = 0.0f;
+  int burstShotsLeft = 0;
+  int desperationBombBurstsDone = 0;
+  int desperationWavesFired = 0; // Rastreador de ondas disparadas en la fase final
+  
+  struct ThrownRock {
+    Vector2 position;
+    Vector2 direction;
+    float speed;
+    bool active;
+  };
+  ThrownRock thrownRocks[8];
+  int thrownRockCount = 0;
+  
+  struct BombZone {
+    Vector2 position;
+    float delay;
+    float radius;
+    bool active;
+  };
+  BombZone desperationBombs[5];
+  float desperationBombTimer = 0.0f;
   struct Wave {
     Vector2 center;
     float radius;
@@ -99,10 +132,15 @@ public:
   // ── Helper de Z-depth (para RenderManager) ───────────────────────
   float GetZDepth() const { return position.y; }
 
-  bool IsImmune() const { return false; }
+  // ── Eje Z Falso: altura del salto para sombra dinámica ─────────────
+  float GetFakeZ() const override {
+    if (aiState == AIState::ATTACK_JUMP && attackPhaseTimer > 0)
+      return sinf((1.0f - attackPhaseTimer) * PI) * 450.0f;
+    return 0.0f;
+  }
 
   bool IsInvulnerable() const override {
-    return (aiState == AIState::AVALANCHE_ACTIVE);
+    return (aiState == AIState::AVALANCHE_ACTIVE || aiState == AIState::DESPERATION_START || aiState == AIState::DESPERATION_ACTIVE || desperationImmune);
   }
 
   // ── Constructor ───────────────────────────────────────────────────
@@ -110,8 +148,9 @@ public:
     spawnPos = pos;
     position = pos;
     radius = 40.0f;
-    maxHp = 1950.0f; // 1500 + 30%
+    maxHp = 3200.0f; // Aumentado significativamente para alargar las fases
     hp = maxHp;
+    previousHp = hp;
     color = {139, 0, 0, 255};
     frameCols = 1;
     frameRows = 1;
@@ -122,4 +161,5 @@ public:
   void Update() override;
   void Draw() override;
   void ScaleDifficulty(int wave) override;
+  void TakeDamage(float dmg, float poiseDmg, Vector2 pushVel) override;
 };

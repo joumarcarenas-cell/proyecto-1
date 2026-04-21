@@ -54,9 +54,32 @@ float hitstopTimer = 0.0f;
 float screenShake = 0.0f; 
 float g_timeScale = 1.0f; 
 double g_gameTime = 0.0;  
+bool g_showHitboxes = true;
 
 // Información de versión para verificación (F5)
 const char* G_BUILD_VERSION = "v1.2.4 - " __DATE__ " " __TIME__;
+
+// =====================================================================
+// Helper para cargar GIFs como SpriteSheets universales
+// =====================================================================
+Texture2D LoadGifAsSpritesheet(const char* fileName, int* outFrames) {
+    Image anim = LoadImageAnim(fileName, outFrames);
+    if (anim.data == nullptr || *outFrames <= 0) return Texture2D{0};
+    
+    Image atlas = GenImageColor(anim.width * (*outFrames), anim.height, BLANK);
+    for (int i = 0; i < *outFrames; i++) {
+        Image frameImg = anim;
+        frameImg.data = ((unsigned char*)anim.data) + (anim.width * anim.height * 4 * i);
+        ImageDraw(&atlas, frameImg, 
+                 Rectangle{0, 0, (float)anim.width, (float)anim.height}, 
+                 Rectangle{(float)(anim.width * i), 0, (float)anim.width, (float)anim.height}, 
+                 WHITE);
+    }
+    Texture2D tex = LoadTextureFromImage(atlas);
+    UnloadImage(atlas);
+    UnloadImage(anim);
+    return tex;
+}
 
 // =====================================================================
 // IMPLEMENTACIÓN DEL RESOURCE MANAGER (debe estar en un .cpp)
@@ -71,7 +94,6 @@ Texture2D ResourceManager::texPared;
 Texture2D ResourceManager::texPasto;
 Texture2D ResourceManager::texPlayer;
 Texture2D ResourceManager::texEnemy;
-Image ResourceManager::texEnemyIm;
 int ResourceManager::texEnemyFrames = 0;
 Texture2D ResourceManager::texEnemyGolem;
 Texture2D ResourceManager::roperaIdle;
@@ -80,23 +102,23 @@ Texture2D ResourceManager::roperaDash;
 Texture2D ResourceManager::roperaAttack1;
 Texture2D ResourceManager::roperaAttack3;
 Texture2D ResourceManager::roperaHeavy;
+Texture2D ResourceManager::ropera8Idle;
+Texture2D ResourceManager::ropera8Run;
+Texture2D ResourceManager::ropera8Attack;
 Texture2D ResourceManager::roperaHit;
 Texture2D ResourceManager::roperaDeath;
 Texture2D ResourceManager::roperaTajoDoble;
-Image ResourceManager::roperaTajoDobleIm;
+
+Texture2D ResourceManager::texPropsRocks;
+Texture2D ResourceManager::texPropsFoliage;
+
 int ResourceManager::roperaTajoFrames = 0;
 
-Image ResourceManager::roperaIdleIm;
 int ResourceManager::roperaIdleFrames = 0;
-Image ResourceManager::roperaRunIm;
 int ResourceManager::roperaRunFrames = 0;
-Image ResourceManager::roperaDashIm;
 int ResourceManager::roperaDashFrames = 0;
-Image ResourceManager::roperaAttack1Im;
 int ResourceManager::roperaAttack1Frames = 0;
-Image ResourceManager::roperaAttack3Im;
 int ResourceManager::roperaAttack3Frames = 0;
-Image ResourceManager::roperaHeavyIm;
 int ResourceManager::roperaHeavyFrames = 0;
 
 Texture2D ResourceManager::reaperQ;
@@ -126,33 +148,22 @@ void ResourceManager::Load() {
 
   texPlayer = LoadTexture("assets/player.png");
 
-  texEnemyIm = LoadImageAnim("assets/golem.gif", &texEnemyFrames);
-  texEnemy = LoadTextureFromImage(texEnemyIm);
+  texEnemy = LoadGifAsSpritesheet("assets/golem.gif", &texEnemyFrames);
   texEnemyGolem = texEnemy; // maintaining legacy reference if needed
 
-  roperaIdleIm = LoadImageAnim("assets/Ropera/idle.gif", &roperaIdleFrames);
-  roperaIdle = LoadTextureFromImage(roperaIdleIm);
-  roperaRunIm = LoadImageAnim("assets/Ropera/run.gif", &roperaRunFrames);
-  roperaRun = LoadTextureFromImage(roperaRunIm);
-  roperaDashIm = LoadImageAnim("assets/Ropera/dash.gif", &roperaDashFrames);
-  roperaDash = LoadTextureFromImage(roperaDashIm);
-  roperaAttack1Im =
-      LoadImageAnim("assets/Ropera/attack 1.gif", &roperaAttack1Frames);
-  roperaAttack1 = LoadTextureFromImage(roperaAttack1Im);
-  roperaAttack3Im =
-      LoadImageAnim("assets/Ropera/attack 2.gif", &roperaAttack3Frames);
-  roperaAttack3 = LoadTextureFromImage(roperaAttack3Im);
-  roperaHeavyIm =
-      LoadImageAnim("assets/Ropera/charge attack.gif", &roperaHeavyFrames);
-  roperaHeavy = LoadTextureFromImage(roperaHeavyIm);
+  roperaIdle = LoadGifAsSpritesheet("assets/Ropera/idle.gif", &roperaIdleFrames);
+  roperaRun = LoadGifAsSpritesheet("assets/Ropera/run.gif", &roperaRunFrames);
+  roperaDash = LoadGifAsSpritesheet("assets/Ropera/dash.gif", &roperaDashFrames);
+  roperaAttack1 = LoadGifAsSpritesheet("assets/Ropera/attack 1.gif", &roperaAttack1Frames);
+  roperaAttack3 = LoadGifAsSpritesheet("assets/Ropera/attack 2.gif", &roperaAttack3Frames);
+  roperaHeavy = LoadGifAsSpritesheet("assets/Ropera/charge attack.gif", &roperaHeavyFrames);
 
   roperaHit = LoadTexture("assets/Ropera/14 - hit.png");
   roperaDeath = LoadTexture("assets/Ropera/15 - death.png");
 
-  roperaTajoDobleIm = LoadImageAnim("assets/Ropera/habilidades/tajo doble.gif",
-                                    &roperaTajoFrames);
-  roperaTajoDoble = LoadTextureFromImage(roperaTajoDobleIm);
+  roperaTajoDoble = LoadGifAsSpritesheet("assets/Ropera/habilidades/tajo doble.gif", &roperaTajoFrames);
 
+  // Reaper animations / icons
   reaperQ = LoadTexture("assets/Reaper/habilidad Q.png");
   reaperE = LoadTexture("assets/Reaper/habilidad E.png");
   reaperR = LoadTexture("assets/Reaper/habilidad R.png");
@@ -162,6 +173,15 @@ void ResourceManager::Load() {
   texVfxSmoke = LoadTexture("assets/vfx/smoke.png");
   texVfxSplash = LoadTexture("assets/vfx/splash.png");
   texVfxGlow = LoadTexture("assets/vfx/glow.png");
+
+  // Ropera 8-Direction Sheets
+  ropera8Idle = LoadTexture("assets/Ropera/ropera.png");
+  ropera8Run = LoadTexture("assets/Ropera/ropera_run.png");
+  ropera8Attack = LoadTexture("assets/Ropera/ropera_attack.png");
+
+  // Props
+  texPropsRocks = LoadTexture("assets/props/rocks.png");
+  texPropsFoliage = LoadTexture("assets/props/foliage.png");
 }
 
 void ResourceManager::Unload() {
@@ -175,9 +195,6 @@ void ResourceManager::Unload() {
   UnloadTexture(texPasto);
   UnloadTexture(texPlayer);
   UnloadTexture(texEnemy);
-  UnloadImage(texEnemyIm);
-  // texEnemyGolem is same as texEnemy now, no need to double unload if they
-  // share id
   if (texEnemyGolem.id != texEnemy.id)
     UnloadTexture(texEnemyGolem);
   UnloadTexture(roperaIdle);
@@ -189,14 +206,6 @@ void ResourceManager::Unload() {
   UnloadTexture(roperaHit);
   UnloadTexture(roperaDeath);
   UnloadTexture(roperaTajoDoble);
-  UnloadImage(roperaTajoDobleIm);
-
-  UnloadImage(roperaIdleIm);
-  UnloadImage(roperaRunIm);
-  UnloadImage(roperaDashIm);
-  UnloadImage(roperaAttack1Im);
-  UnloadImage(roperaAttack3Im);
-  UnloadImage(roperaHeavyIm);
 
   UnloadTexture(reaperQ);
   UnloadTexture(reaperE);
@@ -206,6 +215,13 @@ void ResourceManager::Unload() {
   UnloadTexture(texVfxSmoke);
   UnloadTexture(texVfxSplash);
   UnloadTexture(texVfxGlow);
+
+  UnloadTexture(ropera8Idle);
+  UnloadTexture(ropera8Run);
+  UnloadTexture(ropera8Attack);
+
+  UnloadTexture(texPropsRocks);
+  UnloadTexture(texPropsFoliage);
 }
 
 // =====================================================================

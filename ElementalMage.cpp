@@ -41,12 +41,28 @@ int ElementalMage::GetAvailableECharges() const {
 }
 
 void ElementalMage::Update() {
-  float dt = GetFrameTime();
+  if (hp <= 0) {
+      velocity = {0, 0};
+      return;
+  }
+  float dt = GetFrameTime() * g_timeScale;
 
   if (hitstopTimer <= 0.0f) {
+    if (isStaggered) {
+        staggerTimer -= dt;
+        if (staggerTimer <= 0.0f) isStaggered = false;
+        
+        velocity = Vector2Scale(velocity, 0.85f);
+        position = Arena::GetClampedPos(Vector2Add(position, Vector2Scale(velocity, dt)), radius);
+    }
+
+    UpdateDash(dt);
+    if (hitFlashTimer > 0) hitFlashTimer -= dt;
+
+    if (isStaggered) return;
+
     UpdateState(dt);
     HandleInput(dt);
-    UpdateDash(dt);
     UpdateEntities(dt);
 
     // Clamping to Arena
@@ -70,6 +86,8 @@ void ElementalMage::Reset(Vector2 pos) {
   isOverloaded = false;
   eMarkActive = false;
   dashCharges = maxDashCharges;
+  hasHit = false;
+  isPerfectCounter = false;
   lastDamageType = DamageType::MAGICAL;
 }
 
@@ -120,9 +138,12 @@ void ElementalMage::HandleInput(float dt) {
     if (Vector2Length(input) > 0) {
       input = Vector2Normalize(input);
       // Move speed buff if R mode is active
-      float speed = 320.0f;
+      float speed = 420.0f; // Ajustado a 420 (era 480)
       if (isOverloaded)
-        speed *= 1.25f; // R buff
+        speed *= 1.30f; // R buff (era 1.25)
+        
+      if (isCharging) speed *= 0.20f; // Action commitment
+
       position = Vector2Add(position, Vector2Scale(input, speed * dt));
     }
   }
@@ -140,7 +161,7 @@ void ElementalMage::HandleInput(float dt) {
   if (IsKeyPressed(controls.dash) && CanDash() && state == MageState::NORMAL) {
     UseDash();
     state = MageState::DASHING;
-    attackPhaseTimer = 0.32f; // Mas i-frames (era 0.18)
+    attackPhaseTimer = 0.45f; // Roll duration
     hitstopTimer = 0.0f;
 
     // Dirección basada en Input (WASD)
@@ -156,7 +177,7 @@ void ElementalMage::HandleInput(float dt) {
 
     if (Vector2Length(input) == 0)
       input = facing;
-    velocity = Vector2Scale(Vector2Normalize(input), 975.0f); // Igualado con Ropera (-15%)
+    velocity = Vector2Scale(Vector2Normalize(input), 880.0f); // Reduced further (was 975)
   }
 
   // Q - Change Mode
@@ -164,27 +185,48 @@ void ElementalMage::HandleInput(float dt) {
     ChangeMode();
   }
 
-  // BASIC ATTACKS
-  if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && state == MageState::NORMAL) {
-    StartBasicAttack();
-  }
-
-  // HOLD ATTACK
-  if (IsMouseButtonDown(MOUSE_LEFT_BUTTON) && state == MageState::NORMAL &&
-      holdTimer > 0.3f) {
-    if (energy >= 10.0f) {
-      energy -= 10.0f;
-      StartHeavyAttack();
-    } else {
-      // No hay suficiente energía para el cargado, resetear carga para evitar
-      // loop de intento
-      holdTimer = 0.0f;
-    }
-  }
+  // --- Lógica de Ataque Unificada (Combo vs Cargado Auto) ---
   if (IsMouseButtonDown(MOUSE_LEFT_BUTTON) && state == MageState::NORMAL) {
     holdTimer += dt;
-  } else if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+    isCharging = true;
+    
+    // --- Perfect Dodge Reward: Instant Heavy ---
+    if (hasPerfectDodgeBuff && isCharging) {
+        hasPerfectDodgeBuff = false; // Consumir buff
+        
+        // El ataque cargado del mago ya tiene su propia lógica de teleport/disparo
+        isPerfectCounter = true; // Marcar como contraataque
+        StartHeavyAttack(); // Esto maneja el cambio de estado y cooldowns internos
+        
+        // Re-ajustar para que se sienta instantáneo
+        heavyCastTimer = 0.05f; // Casi sin cast time
+        hitFlashTimer = 0.3f;
+        
+        isCharging = false;
+        holdTimer = 0.0f;
+    }
+
+    if (holdTimer >= 0.30f && isCharging) {
+      if (energy >= 10.0f) {
+        energy -= 10.0f;
+        StartHeavyAttack();
+        isCharging = false;
+        holdTimer = 0.0f;
+      } else {
+        // Sin energía suficiente
+        isCharging = false;
+        holdTimer = 0.0f;
+      }
+    }
+  }
+
+  if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+    if (isCharging && state == MageState::NORMAL) {
+      // Click rápido: combo básico
+      StartBasicAttack();
+    }
     holdTimer = 0.0f;
+    isCharging = false;
   }
 
   // E SKILL (Charge-up)
@@ -226,7 +268,7 @@ void ElementalMage::HandleInput(float dt) {
       t.durationTimer = 0.8f; // Mas rápido
       t.pullRadius = 300.0f;
       t.explodeRadius = 250.0f;
-      t.explodeDamage = 85.0f * rpg.DamageMultiplierMagical();
+      t.explodeDamage = 120.0f * rpg.DamageMultiplierMagical(); // [BUFF] 85 -> 120
       t.active = true;
       t.exploded = false;
       tornados.push_back(t);
@@ -244,6 +286,9 @@ void ElementalMage::HandleInput(float dt) {
 }
 
 void ElementalMage::StartBasicAttack() {
+  Vector2 aim = Vector2Subtract(targetAim, position);
+  if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
+
   state = MageState::ATTACKING;
   float baseTimer =
       (comboStep == 2) ? 0.32f : 0.20f; // Acelerado (era 0.4 / 0.25)
@@ -258,7 +303,7 @@ void ElementalMage::StartBasicAttack() {
     p.speed = 1000.0f; // Aumentado (era 800)
     p.range = 420.0f;  // Rango reducido y unificado
     p.traveled = 0.0f;
-    p.damage = 15.0f * rpg.DamageMultiplierMagical();
+    p.damage = 22.0f * rpg.DamageMultiplierMagical(); // [BUFF] 15 -> 22
     p.active = true;
     p.piercing = false;
     p.isKunai = false;
@@ -316,7 +361,7 @@ void ElementalMage::StartBasicAttack() {
     area.damageDealt = false;
 
     float globalDmg = isOverloaded ? 1.3f : 1.0f;
-    area.damage = 20.0f * rpg.DamageMultiplierMagical() * globalDmg;
+    area.damage = 28.0f * rpg.DamageMultiplierMagical() * globalDmg; // [BUFF] 20 -> 28
     area.isHeavy = false;
     hitAreas.push_back(area);
 
@@ -326,6 +371,9 @@ void ElementalMage::StartBasicAttack() {
   }
 }
 void ElementalMage::StartHeavyAttack() {
+  Vector2 aim = Vector2Subtract(targetAim, position);
+  if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
+
   state = MageState::HEAVY_ATTACK;
   float baseTimer = 0.45f; // Más rápido (era 0.6)
   if (attackSpeedBuffTimer > 0.0f)
@@ -342,7 +390,7 @@ void ElementalMage::StartHeavyAttack() {
     p.speed = 1050.0f; // Aumentado (era 800)
     p.range = 600.0f;  // Rango unificado
     p.traveled = 0.0f;
-    p.damage = 25.0f * rpg.DamageMultiplierMagical(); // Reducido (era 45.0)
+    p.damage = 60.0f * rpg.DamageMultiplierMagical(); // [BUFF] 38 -> 60
     p.active = true;
     p.piercing = true; // Atraviesa pero pega una vez (sistema hitTracking)
     p.hitCount = 0;
@@ -368,7 +416,7 @@ void ElementalMage::StartHeavyAttack() {
       area.color = YELLOW;
       area.damageDealt = false;
       area.isHeavy = true; // Detona estática
-      area.damage = 35.0f * rpg.DamageMultiplierMagical();
+      area.damage = 70.0f * rpg.DamageMultiplierMagical(); // [BUFF] 48 -> 70
       hitAreas.push_back(area);
     }
   }
@@ -418,11 +466,24 @@ void ElementalMage::UpdateState(float dt) {
         Graphics::VFXSystem::GetInstance().SpawnGhost(position, {0, 0, (float)radius * 2, (float)radius * 2}, 0.25f, Fade(GetHUDColor(), 0.35f), (facing.x > 0), 1.0f, {radius, radius}, ResourceManager::texPlayer); // Usando sprite genérico
       }
 
+      // ── Eje Z Falso: roll rasante (igual que Ropera, 7px) ───────
+      {
+        static constexpr float DASH_DURATION = 0.45f;
+        float dashProgress = 1.0f - (attackPhaseTimer / DASH_DURATION);
+        fakeZ = sinf(dashProgress * PI) * 7.0f;
+      }
+
       if (attackPhaseTimer <= 0) {
         state = MageState::NORMAL;
         velocity = Vector2Scale(velocity, 0.45f); // Frenazo al terminar
+        fakeZ = 0.0f; // Volver al suelo al terminar el dash
       }
     } else if (state == MageState::ATTACKING) {
+      // Fuera del dash: bajar fakeZ suavemente
+      if (fakeZ > 0.5f)
+        fakeZ = fakeZ * (1.0f - dt * 12.0f);
+      else
+        fakeZ = 0.0f;
       if (attackPhaseTimer <= 0) {
         state = MageState::NORMAL;
         comboStep = (comboStep + 1) % 3;
@@ -446,7 +507,7 @@ void ElementalMage::UpdateState(float dt) {
             MageTornado explosion;
             explosion.position = eMarkedEnemy->position;
             explosion.durationTimer = 0.0f;
-            explosion.explodeDamage = 50.0f * rpg.DamageMultiplierMagical();
+            explosion.explodeDamage = 65.0f * rpg.DamageMultiplierMagical(); // [BUFF] 50 -> 65
             explosion.explodeRadius = 180.0f;
             explosion.active = true;
             explosion.exploded = false;
@@ -464,7 +525,7 @@ void ElementalMage::UpdateState(float dt) {
             p.speed = 1200.0f;
             p.range = 800.0f;
             p.traveled = 0.0f;
-            p.damage = 25.0f * rpg.DamageMultiplierMagical();
+            p.damage = 32.0f * rpg.DamageMultiplierMagical(); // [BUFF] 25 -> 32
             p.active = true;
             p.piercing = false;
             p.isKunai = true;
@@ -476,40 +537,40 @@ void ElementalMage::UpdateState(float dt) {
         } else {
           energy -= 25.0f;
           int chargesReady = GetAvailableECharges();
+          int chargesToConsume = isSuperE ? 3 : 1;
           
-          if (chargesReady > 0) {
-            int chargesToConsume = isSuperE ? 3 : 1;
-            if (chargesReady < chargesToConsume) chargesToConsume = chargesReady; // Safety fallback
-            
-            for (int i = 0, consumed = 0; i < 3 && consumed < chargesToConsume; i++) {
-              if (eChargesCooldowns[i] <= 0.0f) {
-                eChargesCooldowns[i] = (chargesToConsume > 1) ? 5.5f : 4.0f; // Cooldown un poco más largo para el super
-                consumed++;
-              }
-            }
-            
+          if (chargesReady >= chargesToConsume) {
             MageProjectile p;
             p.position = position;
             p.direction = castDir;
-            p.speed = isSuperE ? 1800.0f : 1500.0f; // Un poco más rápido si es super
-            p.range = 1000.0f;
+            p.speed = isSuperE ? 1250.0f : 1000.0f; // Velocidad reducida a la mitad
+            p.range = isSuperE ? 1100.0f : 900.0f;
             p.traveled = 0.0f;
             
-            float baseDmg = 30.0f * rpg.DamageMultiplierMagical();
-            p.damage = isSuperE ? (baseDmg * 2.5f) : baseDmg;
+            float baseDmg = 42.0f * rpg.DamageMultiplierMagical(); // [BUFF] 32 -> 42
+            p.damage = isSuperE ? (baseDmg * 2.8f) : baseDmg;
             
             p.active = true;
             p.piercing = isSuperE; 
             p.isKunai = false;
             p.isCrescent = false;
+            p.isLightning = true;
             p.element = ElementMode::LIGHTNING;
             p.hitCount = 0;
+            p.isTargetingMouse = false;
+            
             projectiles.push_back(p);
 
-            if (isSuperE) {
-                screenShake = fmaxf(screenShake, 2.5f);
-                hitstopTimer = 0.12f;
+            // Consumir cargas
+            for (int i = 0, consumed = 0; i < 3 && consumed < chargesToConsume; i++) {
+              if (eChargesCooldowns[i] <= 0.0f) {
+                eChargesCooldowns[i] = (chargesToConsume > 1) ? 5.5f : 4.0f; 
+                consumed++;
+              }
             }
+
+            screenShake = fmaxf(screenShake, isSuperE ? 4.0f : 1.5f);
+            hitstopTimer = isSuperE ? 0.12f : 0.06f;
           }
         }
       }
@@ -517,7 +578,7 @@ void ElementalMage::UpdateState(float dt) {
         eHoldTimer += dt;
         
         // Lentificación al cargar
-        float slowMult = 0.4f;
+        float slowMult = 0.15f; // Action commitment
         Vector2 input = {0,0};
         if (IsKeyDown(KEY_W)) input.y -= 1;
         if (IsKeyDown(KEY_S)) input.y += 1;
@@ -572,12 +633,31 @@ void ElementalMage::UpdateEntities(float dt) {
       p.active = false;
 
     if (p.element == ElementMode::WATER_ICE) {
-        Graphics::VFXSystem::GetInstance().SpawnParticleEx(
-            p.position, {0, 0}, 0.2f, SKYBLUE, 3.0f, Graphics::RenderType::CIRCLE, BLEND_ALPHA);
+        // Estela de burbujas/agua para el proyectil
+        if (GetRandomValue(0, 100) < 40) {
+            Graphics::VFXSystem::GetInstance().SpawnFull(
+                p.position, {0, (float)GetRandomValue(-20, 20)}, 0.4f, SKYBLUE, {200, 240, 255, 0},
+                (float)GetRandomValue(3, 5), Graphics::RenderType::CIRCLE, BLEND_ALPHA,
+                -20.0f, 0.95f, 0, 0, false
+            );
+        }
+    } else if (p.isLightning) {
+        // Estela de partículas para el rayo móvil
+        for (int i = 0; i < 2; i++) {
+           Vector2 off = {(float)GetRandomValue(-10, 10), (float)GetRandomValue(-10, 10)};
+           Graphics::VFXSystem::GetInstance().SpawnFull(
+               Vector2Add(p.position, off), {0, 0}, 0.25f, YELLOW, {255,255,255,0},
+               (float)GetRandomValue(4, 7), Graphics::RenderType::RHOMB, BLEND_ADDITIVE,
+               0, 0.92f, (float)GetRandomValue(0,360), 0, false
+           );
+        }
+        // Rayito procedural corto en la punta
+        if (GetRandomValue(0, 100) < 40) {
+            Vector2 tail = Vector2Subtract(p.position, Vector2Scale(p.direction, 60.0f));
+            AnimeVFX::AnimeEmitter::SpawnLightning(tail, p.position, YELLOW, 2.0f);
+        }
     } else {
-        // Lightning particles use Rhomb and Additive
-        Graphics::VFXSystem::GetInstance().SpawnParticleEx(
-            p.position, {0, 0}, 0.15f, YELLOW, 4.0f, Graphics::RenderType::RHOMB, BLEND_ADDITIVE);
+        // Otros elementos si los hubiera
     }
   }
 
@@ -589,12 +669,26 @@ void ElementalMage::UpdateEntities(float dt) {
       t.durationTimer -= dt;
       if (t.durationTimer <= 0) {
         t.exploded = true;
-        // Dejar activo un frame para que CheckCollisions haga el explode
       }
-      Graphics::VFXSystem::GetInstance().SpawnParticleEx(
-          t.position,
-          {(float)GetRandomValue(-100, 100), (float)GetRandomValue(-10, 10)},
-          0.4f, SKYBLUE, 6.0f);
+      
+      // [NEW] VORTEX VISUALS: Remolino de agua y hielo
+      float angle = (float)GetTime() * 10.0f;
+      for (int i = 0; i < 3; i++) {
+          float a = angle + (i * 120.0f * DEG2RAD);
+          float dist = 40.0f + 60.0f * (1.0f - (t.durationTimer / 0.8f));
+          Vector2 partPos = { t.position.x + cosf(a) * dist, t.position.y + sinf(a) * dist * 0.5f };
+          Graphics::VFXSystem::GetInstance().SpawnFull(
+              partPos, {0, -100.0f}, 0.4f, SKYBLUE, {255, 255, 255, 0},
+              (float)GetRandomValue(6, 12), Graphics::RenderType::RHOMB, BLEND_ALPHA
+          );
+      }
+      
+      if (GetRandomValue(0, 100) < 45) {
+          Graphics::VFXSystem::GetInstance().SpawnParticleEx(
+              t.position,
+              {(float)GetRandomValue(-150, 150), (float)GetRandomValue(-30, 30)},
+              0.5f, Fade(SKYBLUE, 0.6f), 8.0f);
+      }
     }
   }
 
@@ -642,19 +736,44 @@ void ElementalMage::CheckCollisions(Boss &boss) {
   float globalDmg = isOverloaded ? 1.5f : 1.0f;
 
   // Aura Overload (ULT LIGHTNING) - Tick rate 0.5s
-  if (isOverloaded && overloadAuraTimer <= 0.0f) {
-    if (CombatUtils::CheckProgressiveRadial(position, boss.position,
-                                            boss.radius, 250.0f, 1.0f)) {
-      boss.hp -= 18.0f * rpg.DamageMultiplierMagical();
-      boss.ApplyElement(ElementMode::LIGHTNING);
-      overloadAuraTimer = 0.5f; // RESET TIMER
-      if (staticStackUltAvailable) {
-        if (boss.staticStacks < 15)
-          boss.staticStacks++;
-        staticStackUltAvailable = false;
+  if (isOverloaded) {
+    if (overloadAuraTimer <= 0.0f) {
+      if (CombatUtils::CheckProgressiveRadial(position, boss.position,
+                                              boss.radius, 250.0f, 1.0f)) {
+        boss.TakeDamage(18.0f * rpg.DamageMultiplierMagical(), 5.0f, {0, 0});
+        boss.ApplyElement(ElementMode::LIGHTNING);
+        overloadAuraTimer = 0.5f; // RESET TIMER
+        if (staticStackUltAvailable) {
+          if (boss.staticStacks < 15)
+            boss.staticStacks++;
+          staticStackUltAvailable = false;
+        }
+        // VFX de impacto de descarga
+        Graphics::SpawnImpactBurst(boss.position, {0, -1}, YELLOW, WHITE, 5, 2);
       }
-      // VFX de aura
-      Graphics::SpawnImpactBurst(boss.position, {0, -1}, YELLOW, WHITE, 5, 2);
+    }
+    
+    // [NEW] Rayos procedimentales aleatorios durante el overload
+    if (GetRandomValue(0, 100) < 12) {
+        float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
+        float dist = (float)GetRandomValue(50, 250);
+        Vector2 target = { position.x + cosf(ang) * dist, position.y + sinf(ang) * dist * 0.5f };
+        AnimeVFX::AnimeEmitter::SpawnLightning(Vector2Add(target, {0, -400}), target, YELLOW, 2.5f);
+        Graphics::SpawnImpactBurst(target, {0, -1}, YELLOW, WHITE, 4, 2);
+        screenShake = fmaxf(screenShake, 0.45f);
+    }
+    
+    // [NEW] Static Field Visual (Chispas de estática estilizadas)
+    if (GetRandomValue(0, 100) < 40) {
+        float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
+        float dist = (float)GetRandomValue(50, 240);
+        Vector2 pPos = { position.x + cosf(ang) * dist, position.y + sinf(ang) * dist * 0.5f };
+        
+        Graphics::VFXSystem::GetInstance().SpawnFull(
+            pPos, {0, (float)GetRandomValue(-80, -30)}, 0.35f, 
+            Fade(YELLOW, 0.8f), {255, 255, 100, 0}, (float)GetRandomValue(3, 6), 
+            Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.94f, (float)GetRandomValue(0, 360), 150.0f, false
+        );
     }
   }
 
@@ -663,11 +782,24 @@ void ElementalMage::CheckCollisions(Boss &boss) {
     if (!p.active)
       continue;
     
-    float hitRadius = (p.isCrescent) ? 45.0f : (p.isKunai ? 22.0f : 25.0f);
+    float hitRadius = 25.0f;
+    if (p.isCrescent) hitRadius = 45.0f;
+    else if (p.isKunai) hitRadius = 22.0f;
+    else if (p.isLightning) hitRadius = 28.0f; // Un poco más que el básico para sentir el poder
+
     float dist = CombatUtils::GetIsoDistance(p.position, boss.position);
     if (dist <= hitRadius + boss.radius && !p.alreadyHit(&boss)) {
       p.addHit(&boss);
-      boss.hp -= p.damage;
+      
+      float finalDmg = p.damage;
+      if (p.isCrescent && isPerfectCounter) {
+          energy = fminf(maxEnergy, energy + 30.0f);
+          isPerfectCounter = false;
+          Graphics::SpawnImpactBurst(position, {0, -1}, GetHUDColor(), WHITE, 15, 6);
+          finalDmg *= 1.5f;
+      }
+      
+      boss.TakeDamage(finalDmg, 3.0f, {0, 0});
       boss.ApplyElement(p.element);
 
       // Otorgar carga si el ataque está disponible
@@ -694,10 +826,12 @@ void ElementalMage::CheckCollisions(Boss &boss) {
 
       // Explosion de proyectil agua basico
       if (p.element == ElementMode::WATER_ICE && !p.isKunai && !p.piercing) {
+        // [NEW] Water Ripple & Ripples
+        Graphics::SpawnWaterRipple(p.position, 80.0f, SKYBLUE);
         // Generar HitArea visual y real instantáneo
         VisualHitArea v;
         v.pos = p.position;
-        v.radius = 60.0f;
+        v.radius = 65.0f;
         v.lifeTimer = 0.2f;
         v.color = SKYBLUE;
         v.damage = 5.0f * rpg.DamageMultiplierMagical();
@@ -708,8 +842,12 @@ void ElementalMage::CheckCollisions(Boss &boss) {
 
       if (!p.piercing)
         p.active = false;
-      Graphics::SpawnImpactBurst(boss.position, p.direction, WHITE, WHITE, 5,
-                                 3);
+      
+      Graphics::SpawnImpactBurst(boss.position, p.direction, WHITE, (p.element == ElementMode::LIGHTNING ? YELLOW : SKYBLUE), 8, 4);
+
+      if (p.isLightning && p.piercing) { // Super Lightning hit
+          screenShake = fmaxf(screenShake, 3.5f);
+      }
     }
   }
 
@@ -729,7 +867,7 @@ void ElementalMage::CheckCollisions(Boss &boss) {
     } else {
       // Explote
       if (dist <= t.explodeRadius) {
-        boss.hp -= t.explodeDamage;
+        boss.TakeDamage(t.explodeDamage, 15.0f, {0, 0});
         boss.ApplyElement(ElementMode::WATER_ICE);
         if (staticStackUltAvailable) {
           if (boss.staticStacks < 15)
@@ -737,37 +875,41 @@ void ElementalMage::CheckCollisions(Boss &boss) {
           staticStackUltAvailable = false;
         }
 
-        // VFX de ICEBERG (Explosión de picos de hielo)
-        for (int i = 0; i < 4; i++) {
-          Vector2 off = {(float)GetRandomValue(-40, 40),
-                         (float)GetRandomValue(-40, 40)};
-          Graphics::VFXSystem::GetInstance().SpawnParticleEx(
-              Vector2Add(boss.position, off), {0, -250}, 0.7f, WHITE, 12.0f, Graphics::RenderType::RHOMB, BLEND_ADDITIVE);
+        // [NEW] VFX de ICEBERG (Explosión masiva con física)
+        Graphics::SpawnWaterRipple(t.position, 280.0f, SKYBLUE);
+        Graphics::SpawnWaterRipple(t.position, 320.0f, WHITE);
+        
+        for (int i = 0; i < 18; i++) {
+          float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
+          float spd = (float)GetRandomValue(350, 850);
+          Graphics::VFXSystem::GetInstance().SpawnFull(
+              t.position, {cosf(ang) * spd, sinf(ang) * spd},
+              0.8f + (float)GetRandomValue(0, 4) * 0.1f,
+              WHITE, {200, 220, 255, 0}, (float)GetRandomValue(10, 25), 
+              Graphics::RenderType::RHOMB, BLEND_ALPHA,
+              500.0f, 0.94f, (float)GetRandomValue(0, 360), (float)GetRandomValue(-300, 300), true
+          );
         }
-        Graphics::SpawnImpactBurst(boss.position, {0, -1}, SKYBLUE, WHITE, 20,
-                                   8);
-        screenShake = fmaxf(screenShake, 3.0f); // Aumentado (era 2.5)
-        hitstopTimer = 0.15f;
+        Graphics::SpawnImpactBurst(boss.position, {0, -1}, SKYBLUE, WHITE, 35, 12);
+        
+        screenShake = fmaxf(screenShake, 4.5f);
       }
       t.active =
           false; // Se limpia en UpdateEntities porque su duracion ya es 0
     }
   }
 
-  // Rays (Detonador Rayo)
+  // Rays (Detonadores o efectos fijos)
   for (auto &lr : lightningRays) {
-    if (lr.lifeTimer >= 0.35f) { // Solo en los primeros 0.05 segundos impacta
-      // Usando check de thrust para linea recta rápida
-      if (CombatUtils::CheckProgressiveThrust(
-              lr.start, Vector2Normalize(Vector2Subtract(lr.end, lr.start)),
-              boss.position, boss.radius, 800.0f, 15.0f, 1.0f)) {
-        // Hit detonador
-        float basedmg = 50.0f * rpg.DamageMultiplierMagical() * globalDmg;
-        basedmg += (boss.staticStacks * 5.0f * rpg.DamageMultiplierMagical());
-        boss.hp -= basedmg;
-        boss.staticStacks = 0; // Reinicia
-        Graphics::SpawnImpactBurst(boss.position, {0, -1}, YELLOW, WHITE, 20,
-                                   8);
+    if (lr.lifeTimer >= 0.35f && lr.damage <= 0) { // Solo detonadores antiguos aquí
+      Vector2 dir = Vector2Normalize(Vector2Subtract(lr.end, lr.start));
+      if (CombatUtils::IsoArc(lr.start, dir, boss.position, boss.radius, 800.0f, 15.0f)) {
+        float finalDmg = 50.0f * rpg.DamageMultiplierMagical() * globalDmg;
+        finalDmg += (boss.staticStacks * 5.0f * rpg.DamageMultiplierMagical());
+        boss.TakeDamage(finalDmg, 8.0f, {0, 0});
+        boss.staticStacks = 0;
+        boss.ApplyElement(ElementMode::LIGHTNING);
+        Graphics::SpawnImpactBurst(boss.position, {0, -1}, YELLOW, WHITE, 20, 8);
       }
     }
   }
@@ -782,6 +924,13 @@ void ElementalMage::CheckCollisions(Boss &boss) {
       float finalDmg = ha.damage;
 
       // Explosión de estática para el modo rayo pesado
+      if (ha.isHeavy && isPerfectCounter) {
+          energy = fminf(maxEnergy, energy + 30.0f);
+          isPerfectCounter = false;
+          Graphics::SpawnImpactBurst(position, {0, -1}, GetHUDColor(), WHITE, 15, 6);
+          finalDmg *= 1.5f;
+      }
+
       if (ha.isHeavy && boss.staticStacks > 0) {
         float explosionDmg =
             boss.staticStacks * 12.0f * rpg.DamageMultiplierMagical();
@@ -794,7 +943,7 @@ void ElementalMage::CheckCollisions(Boss &boss) {
         screenShake = fmaxf(screenShake, 2.0f);
       }
 
-      boss.hp -= finalDmg;
+      boss.TakeDamage(finalDmg, ha.isHeavy ? 30.0f : 10.0f, {0, 0});
       boss.ApplyElement(ElementMode::LIGHTNING);
       if (staticStackBasicAvailable) {
         if (boss.staticStacks < 15)
@@ -806,7 +955,7 @@ void ElementalMage::CheckCollisions(Boss &boss) {
                                  5);
       screenShake =
           fmaxf(screenShake, 0.6f); // Reducido (era 1.0) y usando fmaxf
-      hitstopTimer = 0.05f;
+      hitstopTimer = ha.isHeavy ? 0.12f : 0.05f; // Mayor peso para el impacto pesado
     }
   }
 }
@@ -818,22 +967,54 @@ void ElementalMage::HandleSkills(Boss &boss) {
 
 void ElementalMage::Draw() {
   Color mag = GetHUDColor();
-  DrawCircleV(position, radius, mag);
+
+  // --- VFX: Perfect Dodge Glow ---
+  if (hasPerfectDodgeBuff) {
+    float t = (float)GetTime();
+    float pulse = 0.5f + 0.5f * sinf(t * 15.0f);
+    DrawCircleLinesV({position.x, position.y - 20}, radius + 6.0f + 6.0f * pulse, Fade(GOLD, 0.8f));
+    DrawCircleGradient((int)position.x, (int)position.y - 20, radius * 3.5f,
+                        Fade(GOLD, 0.4f * pulse), Fade(GOLD, 0));
+  }
+
+  // --- Indicador de dirección (Hades-style 8-way) ---
+  Vector2 snapped = Directions::GetSnappedVector(facing);
+  
+  // Anillo de base
+  DrawCircleLines((int)position.x, (int)position.y - 20, radius + 5, Fade(mag, 0.3f));
+  
+  // Puntero 8-way
+  Vector2 pointerPos = Vector2Add({position.x, position.y - 20}, Vector2Scale(snapped, radius + 11.0f));
+  DrawCircleV(pointerPos, 4.0f, WHITE);
+
+  DrawCircleV({position.x, position.y - 20}, radius, mag);
+  DrawCircleLines((int)position.x, (int)position.y - 20, radius, GREEN);
 
   for (auto &p : projectiles) {
     if (p.active) {
       if (p.isCrescent) {
-        // Dibujar Media Luna (Crescent Moon) - Tamaño incrementado
+        // Dibujar Media Luna (Crescent Moon)
         float baseAngle = atan2f(p.direction.y, p.direction.x) * RAD2DEG;
         Color cInner = Fade(mag, 0.8f);
         Color cOuter = mag;
         
-        // Dibujamos el arco de la media luna (Radios aumentados de 18/32 a 28/48)
-        DrawRing(p.position, 28.0f, 48.0f, baseAngle - 60.0f, baseAngle + 60.0f, 24, cOuter);
-        DrawRing(p.position, 16.0f, 28.0f, baseAngle - 45.0f, baseAngle + 45.0f, 18, cInner);
+        DrawRing(p.position, 28.0f, 48.0f, baseAngle - 70.0f, baseAngle + 70.0f, 32, cOuter);
+        DrawRing(p.position, 16.0f, 28.0f, baseAngle - 55.0f, baseAngle + 55.0f, 24, cInner);
+        DrawCircleV(p.position, 18.0f, Fade(WHITE, 0.5f));
         
-        // Glow central proporcional
-        DrawCircleV(p.position, 18.0f, Fade(WHITE, 0.4f));
+        // Chispas de la media luna
+        if (GetRandomValue(0,100) < 20) {
+            Graphics::VFXSystem::GetInstance().SpawnFull(
+                p.position, Vector2Scale(p.direction, -150.0f), 0.3f, WHITE, mag, 4.0f, 
+                Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0.0f, 0.9f, (float)GetRandomValue(0,360), 10.0f, false
+            );
+        }
+      } else if (p.isLightning) {
+         // Rayo estilizado para el proyectil
+         Vector2 tail = Vector2Subtract(p.position, Vector2Scale(p.direction, 50.0f));
+         DrawLineEx(tail, p.position, 6.0f, WHITE);
+         DrawCircleV(p.position, 10.0f, YELLOW);
+         DrawCircleV(p.position, 6.0f, WHITE);
       } else {
         DrawCircleV(p.position, (p.isKunai) ? 8.0f : 12.0f, mag);
       }
@@ -849,7 +1030,8 @@ void ElementalMage::Draw() {
   }
 
   for (auto &lr : lightningRays) {
-    DrawLineEx(lr.start, lr.end, 15.0f * (lr.lifeTimer / 0.4f), YELLOW);
+    float t = lr.lifeTimer / 0.4f;
+    DrawLineEx(lr.start, lr.end, 15.0f * t, Fade(YELLOW, t));
   }
 
   for (auto &ha : hitAreas) {
@@ -875,27 +1057,28 @@ void ElementalMage::Draw() {
       // Aura pulsante
       DrawCircleLines((int)position.x, (int)position.y - 20, radius + 5.0f + (10.0f * (1.0f - chargePct)), Fade(chargeCol, 0.6f * chargePct));
       
-      // Partículas internas
-      if (GetFrameTime() > 0) {
-          for (int i = 0; i < (int)(chargePct * 3); i++) {
-              Graphics::VFXSystem::GetInstance().SpawnParticle(
-                  Vector2Add(position, {(float)GetRandomValue(-20, 20), (float)GetRandomValue(-40, 0)}),
-                  {0, (float)GetRandomValue(-100, -50)},
-                  0.3f, chargeCol
-              );
-          }
+      // Partículas internas (Rombos estilizados "Anime Juice")
+      if (GetRandomValue(0, 100) < 30) {
+          Vector2 spawnPos = { position.x + (float)GetRandomValue(-30, 30), position.y - 40 + (float)GetRandomValue(-20, 20) };
+          Graphics::VFXSystem::GetInstance().SpawnFull(
+              spawnPos, {0, (float)GetRandomValue(-150, -80)}, 0.4f,
+              chargeCol, {255, 255, 100, 0}, (float)GetRandomValue(4, 8), 
+              Graphics::RenderType::RHOMB, BLEND_ADDITIVE
+          );
       }
       
       // Flash si está listo para el Super
       if (chargePct >= 1.0f && GetAvailableECharges() >= 3) {
-          if (((int)(g_gameTime * 15) % 2) == 0) {
-               DrawCircleLines((int)position.x, (int)position.y - 20, radius + 12.0f, WHITE);
+          if (((int)(g_gameTime * 20) % 2) == 0) {
+               DrawCircleLines((int)position.x, (int)position.y - 20, radius + 15.0f, WHITE);
+               DrawCircleLines((int)position.x, (int)position.y - 20, radius + 18.0f, YELLOW);
           }
       }
   }
 
   if (isOverloaded) {
-    DrawCircleLines(position.x, position.y, 250.0f, Fade(YELLOW, 0.4f));
+    // Círculo mucho más tenue para no cegar al jugador (User feedback)
+    DrawCircleLines(position.x, position.y, 250.0f, Fade(YELLOW, 0.12f));
   }
 }
 

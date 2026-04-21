@@ -2,6 +2,7 @@
 #include "Player.h"
 #include "Boss.h"
 #include "ResourceManager.h"
+#include "DirectionUtils.h"
 #include <vector>
 
 // Proyectil generico del mago
@@ -19,7 +20,8 @@ struct MageProjectile {
     bool isTargetingMouse;  
     Vector2 targetPos;
     bool isKunai;
-    bool isCrescent; // For "Media Luna" heavy attacks
+    bool isCrescent; 
+    bool isLightning; // For lightning spears
 
     // Hit tracking for piercing
     void* hitEntities[16];
@@ -54,6 +56,8 @@ struct LightningRay {
     Vector2 start;
     Vector2 end;
     float lifeTimer;
+    float damage;
+    bool isSuper;
 };
 
 // Area visual de impacto instantáneo (Básicos de rayo)
@@ -84,7 +88,24 @@ public:
     void HandleSkills(Boss &boss) override;
     void CheckCollisions(Boss &boss) override;
     
-    bool IsImmune() const override { return state == MageState::DASHING || attackPhase == AttackPhase::RECOVERY; }
+    void CancelAttack() override {
+        state = MageState::NORMAL;
+        attackPhase = AttackPhase::NONE;
+        hasHit = false;
+        isCharging = false;
+        holdTimer = 0.0f;
+        heavyCastTimer = 0.0f;
+        eCastTimer = 0.0f;
+        eHoldTimer = 0.0f;
+    }
+
+    bool IsImmune() const override { 
+        // Roll: 0.45s total
+        // Startup (0.45 -> 0.40): Vulnerable
+        // Active (0.40 -> 0.15): i-frames
+        // Recovery (0.15 -> 0.00): Vulnerable
+        return (state == MageState::DASHING && attackPhaseTimer <= 0.40f && attackPhaseTimer > 0.15f);
+    }
     
     std::vector<AbilityInfo> GetAbilities() const override;
     

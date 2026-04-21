@@ -59,6 +59,9 @@ public:
         m_locContrast       = GetShaderLocation(m_shader, "contrast");
         m_locGrain          = GetShaderLocation(m_shader, "grainIntensity");
 
+        m_locImpactType     = GetShaderLocation(m_shader, "impactType");
+        m_locGlitch         = GetShaderLocation(m_shader, "glitchIntensity");
+
         float res[2] = { (float)w, (float)h };
         SetShaderValue(m_shader, m_locResolution, res, SHADER_UNIFORM_VEC2);
     }
@@ -82,9 +85,20 @@ public:
         }
     }
 
-    // Activar flash de pantalla
+    // Activar flash de pantalla (blanco sutil)
     void SpawnFlash(float duration = 0.05f) {
         m_flashTimer = duration;
+    }
+
+    // Activar Impact Frame (0=off, 1=inverted, 2=grayscale)
+    void SpawnImpactFrame(int type, float duration = 0.06f) {
+        m_impactType = type;
+        m_impactTimer = duration;
+    }
+
+    // Activar Glitch visual (scanlines)
+    void SpawnGlitch(float duration = 0.15f) {
+        m_glitchTimer = duration;
     }
 
     // Setters para Color Grading dinámico
@@ -103,6 +117,11 @@ public:
         m_hitstopTimer   = hitstopTimer;
 
         if (m_flashTimer > 0) m_flashTimer -= dt;
+        if (m_impactTimer > 0) {
+            m_impactTimer -= dt;
+            if (m_impactTimer <= 0) m_impactType = 0;
+        }
+        if (m_glitchTimer > 0) m_glitchTimer -= dt;
 
         for (auto& r : m_ripples) {
             if (r.active) {
@@ -149,6 +168,11 @@ public:
         SetShaderValueV(m_shader, m_locRippleAge,    ageArray, SHADER_UNIFORM_FLOAT, 4);
         SetShaderValue(m_shader, m_locRippleCount,   &activeCount,     SHADER_UNIFORM_INT);
 
+        // Impact & Glitch
+        float glitchVal = (m_glitchTimer > 0) ? (m_glitchTimer / 0.15f) : 0.0f;
+        SetShaderValue(m_shader, m_locImpactType,    &m_impactType,    SHADER_UNIFORM_INT);
+        SetShaderValue(m_shader, m_locGlitch,        &glitchVal,       SHADER_UNIFORM_FLOAT);
+
         // Color Grading
         SetShaderValue(m_shader, m_locExposure,      &m_exposure,      SHADER_UNIFORM_FLOAT);
         SetShaderValue(m_shader, m_locSaturation,    &m_saturation,    SHADER_UNIFORM_FLOAT);
@@ -170,18 +194,22 @@ private:
     int m_locHitstop = -1, m_locFlashAlpha = -1;
     int m_locRipplePos = -1, m_locRippleAge = -1, m_locRippleCount = -1;
     int m_locExposure = -1, m_locSaturation = -1, m_locContrast = -1, m_locGrain = -1;
+    int m_locImpactType = -1, m_locGlitch = -1;
 
     std::array<Ripple, 4> m_ripples = {};
     float m_time          = 0;
     float m_shakeIntensity= 0;
     float m_hitstopTimer  = 0;
     float m_flashTimer    = 0;
+    float m_impactTimer   = 0;
+    float m_glitchTimer   = 0;
+    int   m_impactType    = 0;
 
     // Default Grading Values (Natural with slight pop)
     float m_exposure       = 1.0f;
-    float m_saturation     = 1.35f; 
-    float m_contrast       = 1.22f; 
-    float m_grainIntensity = 0.025f;
+    float m_saturation     = 1.08f; // Reduced (was 1.15)
+    float m_contrast       = 1.06f; // Reduced (was 1.12)
+    float m_grainIntensity = 0.012f; // Reduced (was 0.025)
 };
 
 // =============================================================
@@ -380,13 +408,16 @@ private:
 // =============================================================
 // 4. AMBIENT PARTICLE SYSTEM (Polvo / Motas de aire)
 // =============================================================
+enum class AmbientType { DUST, LEAF };
+
 struct AmbientMote {
     Vector2 pos;
     Vector2 vel;
     float   size;
     float   life;
     float   maxLife;
-    float   twist;   // rotacion lenta
+    float   twist;   
+    AmbientType type;
 };
 
 class AmbientSystem {
@@ -403,25 +434,59 @@ public:
         for (int i = 0; i < TARGET_COUNT; i++) SpawnMote();
     }
 
-    void Update(float dt, Vector2 playerPos) {
-        m_windPhase += dt * 0.4f;
-        float windX = cosf(m_windPhase) * 18.0f;
-        float windY = sinf(m_windPhase * 0.7f) * 8.0f;
+    // Devuelve la fuerza de viento actual para otros sistemas
+    Vector2 GetWindForce() const {
+        float i = m_windIntensity * (0.8f + 0.2f * sinf(m_windPhase * 2.5f));
+        return { cosf(m_windPhase) * 60.0f * i, sinf(m_windPhase * 0.7f) * 25.0f * i };
+    }
 
-        // Leve atraccion hacia el jugador
+    void Update(float dt, Vector2 playerPos) {
+        // --- Motor de Viento Intermitente ---
+        m_windStateTimer -= dt;
+        if (m_windStateTimer <= 0) {
+            int r = GetRandomValue(0, 2);
+            if (r == 0) { // Calma
+                m_targetIntensity = 0.05f;
+                m_windStateTimer = 3.0f + (float)GetRandomValue(0, 4);
+            } else if (r == 1) { // Suave
+                m_targetIntensity = 0.4f;
+                m_windStateTimer = 4.0f + (float)GetRandomValue(0, 6);
+            } else { // Brusco
+                m_targetIntensity = 1.35f;
+                m_windStateTimer = 1.5f + (float)GetRandomValue(0, 3);
+            }
+        }
+
+        m_windIntensity += (m_targetIntensity - m_windIntensity) * dt * 0.5f;
+        m_windPhase += dt * (0.3f + m_windIntensity * 0.6f);
+
+        Vector2 wind = GetWindForce();
+        float time = (float)GetTime();
+
         for (auto& m : m_motes) {
+            // Atraccion sutil al jugador
             Vector2 toPlayer = Vector2Subtract(playerPos, m.pos);
             float   d        = Vector2Length(toPlayer);
-            if (d > 50.0f && d < 400.0f) {
-                m.vel = Vector2Add(m.vel, Vector2Scale(Vector2Normalize(toPlayer), 4.0f * dt));
+            if (d < 350.0f) {
+                m.vel = Vector2Add(m.vel, Vector2Scale(Vector2Normalize(toPlayer), 8.0f * dt));
             }
 
-            m.vel.x += windX * dt;
-            m.vel.y += windY * dt;
-            m.vel    = Vector2Scale(m.vel, 0.97f); // friccion
+            // Aplicar viento
+            float windResponse = (m.type == AmbientType::LEAF) ? 1.25f : 0.8f;
+            m.vel.x += wind.x * windResponse * dt;
+            m.vel.y += wind.y * windResponse * dt;
+            
+            // Flutter aleatorio para hojas
+            if (m.type == AmbientType::LEAF) {
+                m.vel.x += sinf(time * 3.5f + m.pos.y) * 15.0f * dt;
+                m.twist += dt * (2.5f + m_windIntensity * 5.0f);
+            } else {
+                m.twist += dt * (0.8f + m_windIntensity * 1.5f);
+            }
+
+            m.vel    = Vector2Scale(m.vel, 0.965f); // friccion
             m.pos    = Vector2Add(m.pos, Vector2Scale(m.vel, dt));
             m.life  -= dt;
-            m.twist += dt * 0.8f;
         }
 
         m_motes.erase(
@@ -429,46 +494,52 @@ public:
                 [](const AmbientMote& m){ return m.life <= 0; }),
             m_motes.end());
 
-        // Reponer motas
         while ((int)m_motes.size() < TARGET_COUNT) SpawnMote();
     }
 
     void Draw() const {
         for (const auto& m : m_motes) {
             float a = (m.life / m.maxLife);
-            a = a * a; // cuadratico para fade natural
+            float alpha = (a > 0.8) ? (1.0f - a)/0.2f : (a / 0.8f);
+            alpha = alpha * alpha;
 
-            // Dibuja una motita rombica (simple barra girada)
+            Color baseCol = (m.type == AmbientType::LEAF) ? Color{ 40, 140, 60, 255 } : Color{ 230, 225, 210, 255 };
+            if (m.type == AmbientType::LEAF && m.size > 3.0f) baseCol = { 100, 130, 40, 255 }; // Hojas cafes/verdes
+            
             float hw = m.size * 0.5f;
-            float hh = m.size * 1.5f;
+            float hh = (m.type == AmbientType::LEAF) ? m.size * 1.8f : m.size * 1.5f;
+            
             DrawRectanglePro(
                 { m.pos.x, m.pos.y, hw * 2, hh * 2 },
                 { hw, hh },
                 m.twist * RAD2DEG,
-                Fade({ 230, 225, 210, 255 }, a * 0.35f)
+                Fade(baseCol, alpha * 0.45f)
             );
         }
     }
 
 private:
-    static constexpr int TARGET_COUNT = 40;
+    static constexpr int TARGET_COUNT = 65; // Mas densidad para el 30x30
     std::vector<AmbientMote> m_motes;
-    Vector2 m_center    = { 2000, 2000 };
-    float   m_radius    = 1200.0f;
+    Vector2 m_center    = { 2100, 2100 };
+    float   m_radius    = 1800.0f;
     float   m_windPhase = 0;
+    float   m_windIntensity = 0.2f;
+    float   m_targetIntensity = 0.2f;
+    float   m_windStateTimer = 2.0f;
 
     void SpawnMote() {
-        // Posicion aleatoria dentro de la arena
         float angle = ((float)GetRandomValue(0, 360)) * DEG2RAD;
-        float dist  = (float)GetRandomValue(0, (int)(m_radius * 0.9f));
+        float dist  = (float)GetRandomValue(0, (int)(m_radius * 0.95f));
         AmbientMote m;
         m.pos  = { m_center.x + cosf(angle) * dist, m_center.y + sinf(angle) * dist * 0.5f };
-        m.vel  = { (float)GetRandomValue(-10, 10), (float)GetRandomValue(-5, 5) };
-        m.size = (float)GetRandomValue(2, 5) * 0.5f;
-        float lt = 4.0f + (float)GetRandomValue(0, 60) * 0.1f;
+        m.vel  = { (float)GetRandomValue(-15, 15), (float)GetRandomValue(-8, 8) };
+        m.size = (float)GetRandomValue(3, 8) * 0.5f;
+        float lt = 4.0f + (float)GetRandomValue(0, 80) * 0.1f;
         m.life    = lt;
         m.maxLife = lt;
         m.twist   = (float)GetRandomValue(0, 360) * DEG2RAD;
+        m.type    = (GetRandomValue(0, 10) > 4) ? AmbientType::LEAF : AmbientType::DUST;
         m_motes.push_back(m);
     }
 };

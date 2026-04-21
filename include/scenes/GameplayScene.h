@@ -12,6 +12,7 @@
 #include "../Enemy.h"
 #include "../HardBoss.h"
 #include "../EtherCorrupto.h"
+#include "../Props.h"
 #include "../IsoMap.h"
 #include "../RPGStats.h"
 #include "../graphics/VFXSystem.h"
@@ -49,12 +50,17 @@ private:
   int m_currentWave = 1;
 
   // ── Victoria ─────────────────────────────────────────────────────
+  enum class MatchState { INTRO, ANNOUNCEMENT, COMBAT, MATCH_ENDED };
+  MatchState m_matchState = MatchState::INTRO;
+  float m_stateTimer = 0.0f;
+  float m_bossIntroOffset = 0.0f; // Para el efecto de salir del suelo
+
   bool m_isVictory = false;
   float m_victoryTimer = 0.0f;    // tiempo que lleva la pantalla visible
   float m_totalGameTime = 0.0f;   // cronómetro desde el inicio
-  bool m_gameFrozen = false;      // congela inputs y physics al vencer
 
   Camera2D m_camera{};
+  float m_targetZoom = 1.22f;
 
   // ── Mapa isométrico de suelo ──────────────────────────────────────
   IsoMap::Map m_isoMap;     // Datos de la cuadrícula (TileID por celda)

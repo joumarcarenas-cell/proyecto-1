@@ -2,6 +2,7 @@
 #include "CommonTypes.h"
 #include "Boss.h"
 #include "Player.h"
+#include "DirectionUtils.h"
 
 // =====================================================
 // --- CLASE REAPER (Nuevo Personaje) ---
@@ -27,7 +28,7 @@ public:
   float miniDashTimer = 0.0f; // Duracion del mini-dash post-release (0.15s)
 
   // --- Blink (Dash) ---
-  float blinkDistance = 98.0f; // Reducido un 15% (era 115)
+  float blinkDistance = 88.0f; // Reduced further (was 98)
   float blinkGraceTimer = 0.0f; // Temporizador de recuperación post-blink
 
   // --- Habilidad Q: Ground Bursts secuenciales ---
@@ -74,6 +75,17 @@ public:
   void HandleSkills(Boss &boss) override;
   void CheckCollisions(Boss &boss) override;
   bool IsImmune() const override { return state == ReaperState::DASHING; }
+  
+  void CancelAttack() override {
+      state = ReaperState::NORMAL;
+      attackPhase = AttackPhase::NONE;
+      hasHit = false;
+      isCharging = false;
+      holdTimer = 0.0f;
+      heavyHasHit = false;
+      qActive = false;
+  }
+  
   std::vector<AbilityInfo> GetAbilities() const override;
 
   std::string GetName() const override { return "[SEGADOR]"; }

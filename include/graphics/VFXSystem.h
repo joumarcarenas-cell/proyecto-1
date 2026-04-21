@@ -14,8 +14,8 @@ struct Particle {
   Vector2 pos;
   Vector2 vel;
   float life;
-  float maxLife; 
-  float size;    
+  float maxLife;
+  float size;
   Color startCol;
   Color endCol;
   RenderType type = RenderType::CIRCLE;
@@ -23,6 +23,13 @@ struct Particle {
   Texture2D* texture = nullptr; // For SPRITE type
   float rotation = 0;
   float rotationVel = 0;
+
+  // New Physics & Juice
+  float gravity = 0.0f;
+  float friction = 0.92f;
+  bool  useBounce = false;
+  float bounciness = 0.6f;
+  float sizeMultiplier = 1.0f; // controlled by time
 };
 
 class VFXSystem {
@@ -56,7 +63,29 @@ public:
     particles.push_back(p);
   }
 
-  // Spawn con Gradiente y Textura
+  // Spawn completo para efectos "Juicy"
+  void SpawnFull(Vector2 pos, Vector2 vel, float life, Color startCol, Color endCol,
+                 float size, RenderType type, BlendMode blend, 
+                 float gravity = 0, float friction = 0.92f, 
+                 float rotation = 0, float rotVel = 0, bool bounce = false) {
+    Particle p;
+    p.pos = pos;
+    p.vel = vel;
+    p.life = p.maxLife = life;
+    p.size = size;
+    p.startCol = startCol;
+    p.endCol = endCol;
+    p.type = type;
+    p.blendMode = blend;
+    p.gravity = gravity;
+    p.friction = friction;
+    p.rotation = rotation;
+    p.rotationVel = rotVel;
+    p.useBounce = bounce;
+    particles.push_back(p);
+  }
+
+  // Spawn con Gradiente y Textura (Legacy/Compat)
   void SpawnHybrid(Vector2 pos, Vector2 vel, float life, Color startCol, Color endCol,
                    float size, RenderType type, BlendMode blend, 
                    float rotation = 0, float rotationVel = 0, Texture2D* tex = nullptr) {
@@ -96,8 +125,23 @@ public:
 
   void Update(float dt) {
     for (auto &p : particles) {
+      // Aplicar gravedad
+      p.vel.y += p.gravity * dt;
+      
+      // Movimiento
       p.pos = Vector2Add(p.pos, Vector2Scale(p.vel, dt));
-      p.vel = Vector2Scale(p.vel, 0.92f); // friccion suave
+      
+      // Friccion
+      p.vel = Vector2Scale(p.vel, p.friction);
+      
+      // Rebote simple en el suelo (arena isometrica)
+      // Usamos el centro de la arena (2000, 2000) como referencia de plano si no hay plano exacto
+      if (p.useBounce && p.pos.y > 2800.0f) { // Suelo aproximado de la arena expandida
+          p.pos.y = 2800.0f;
+          p.vel.y *= -p.bounciness;
+          p.vel.x *= 0.8f; // mas friccion al rebotar
+      }
+
       p.rotation += p.rotationVel * dt;
       p.life -= dt;
     }
@@ -122,9 +166,13 @@ public:
           g.pos.y - 1.0f,
           [g]() {
             float t = g.life / g.maxLife;
-            Color c = Fade(g.color, t * 0.5f);
+            Color c = Fade(g.color, t * 0.52f);
             Rectangle dest = { g.pos.x, g.pos.y, g.src.width * g.scale, g.src.height * g.scale };
-            DrawTexturePro(g.tex, g.src, dest, g.origin, 0.0f, c);
+            if (g.tex.id == 0) {
+                DrawCircleV(g.pos, 25.0f * g.scale, c);
+            } else {
+                DrawTexturePro(g.tex, g.src, dest, g.origin, 0.0f, c);
+            }
           },
           Graphics::RenderLayer::VFX);
     }
@@ -135,17 +183,24 @@ public:
           p.pos.y,
           [p]() {
             float t = p.life / p.maxLife; 
-            float alpha = t * t;          
             
-            // Mezclar colores start -> end
+            // Curva de Alpha: inicia fuerte, desvanece suave
+            float alphaCurve = (t > 0.8f) ? 1.0f : (t / 0.8f);
+            alphaCurve = alphaCurve * alphaCurve;
+            
+            // Curva de Tamaño: pop-in sutil + encogimiento
+            float sizeCurve = 1.0f;
+            if (t > 0.9f) sizeCurve = (1.0f - t) / 0.1f; // pop de entrada
+            else sizeCurve = t / 0.9f; // encoge hacia el final
+            
             Color currentCol = {
               (unsigned char)Lerp(p.endCol.r, p.startCol.r, t),
               (unsigned char)Lerp(p.endCol.g, p.startCol.g, t),
               (unsigned char)Lerp(p.endCol.b, p.startCol.b, t),
-              (unsigned char)Lerp(p.endCol.a, p.startCol.a, alpha)
+              (unsigned char)Lerp(p.endCol.a, p.startCol.a, alphaCurve)
             };
 
-            float s = p.size * (0.4f + 0.6f * t);
+            float s = p.size * sizeCurve;
 
             if (p.type == RenderType::SPRITE && p.texture != nullptr) {
                 Rectangle src = { 0, 0, (float)p.texture->width, (float)p.texture->height };
@@ -212,6 +267,51 @@ inline void SpawnImpactBurst(Vector2 origin, Vector2 facing, Color sparkColor,
 inline void SpawnDashTrail(Vector2 pos) {
   VFXSystem::GetInstance().SpawnParticleEx(pos, {0, 0}, 0.18f,
                                            {0, 220, 200, 255}, 5.0f);
+}
+
+// Lineas de velocidad (Streamers) - Para personajes muy rapidos
+inline void SpawnSpeedStreamer(Vector2 pos, Vector2 vel) {
+    VFXSystem::GetInstance().SpawnFull(
+        pos, Vector2Scale(vel, -0.4f), 0.15f, 
+        {255, 255, 255, 180}, {200, 240, 255, 0}, 
+        1.5f, RenderType::RHOMB, BLEND_ADDITIVE, 
+        0, 0.85f, atan2f(vel.y, vel.x) * RAD2DEG, 0, false
+    );
+}
+
+// Sangre Estilizada (para Modo Garras, etc)
+inline void SpawnStyledBlood(Vector2 pos, Vector2 dir) {
+    auto &vfx = VFXSystem::GetInstance();
+    int count = GetRandomValue(3, 6);
+    for (int i = 0; i < count; i++) {
+        float angle = atan2f(dir.y, dir.x) + (float)GetRandomValue(-40, 40) * DEG2RAD;
+        float spd = (float)GetRandomValue(400, 900);
+        vfx.SpawnFull(
+            pos, {cosf(angle) * spd, sinf(angle) * spd},
+            0.4f + (float)GetRandomValue(0, 20) * 0.01f,
+            {160, 0, 20, 255}, {60, 0, 10, 0}, 
+            (float)GetRandomValue(3, 6), RenderType::RHOMB, BLEND_ALPHA,
+            400.0f, 0.94f, (float)GetRandomValue(0, 360), (float)GetRandomValue(-200, 200), true
+        );
+    }
+}
+
+// Onda de agua (Ripple) - Para impactos de agua o efectos de frio
+inline void SpawnWaterRipple(Vector2 pos, float maxRadius, Color col) {
+    VFXSystem::GetInstance().SpawnFull(
+        pos, {0,0}, 0.5f, Fade(col, 0.6f), Fade(col, 0),
+        maxRadius, RenderType::CIRCLE, BLEND_ALPHA,
+        0, 1.0f, 0, 0, false
+    );
+}
+
+// Onda de Choque Kinética (Sonic Boom) - Para impactos pesados
+inline void SpawnSonicBoom(Vector2 pos, float maxRadius) {
+    VFXSystem::GetInstance().SpawnFull(
+        pos, {0,0}, 0.35f, Fade(WHITE, 0.5f), Fade(SKYBLUE, 0),
+        maxRadius, RenderType::CIRCLE, BLEND_ADDITIVE,
+        0, 1.0f, 0, 0, false
+    );
 }
 
 // Flash de impacto (en pantalla completa o local)

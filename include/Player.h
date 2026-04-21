@@ -41,6 +41,10 @@ public:
   bool isCharging = false;
   bool heavyHasHit = false;
 
+  // --- Eje Z Falso (ilusión 3D: sombra dinámica) ---
+  float fakeZ = 0.0f;      // Altura ficticia en píxeles (0 = en el suelo)
+  virtual float GetFakeZ() const { return fakeZ; }
+
   // --- Dash y Cooldowns ---
   int dashCharges = 2;
   int maxDashCharges = 2;
@@ -50,6 +54,9 @@ public:
   float qCooldown = 0.0f;
   float eCooldown = 0.0f;
   float ultCooldown = 0.0f;
+
+  float m_dashTimer = 0.0f; // Time since last dash started
+  static constexpr float PERFECT_DODGE_WINDOW = 0.15f; // Window for perfect dodge (Ampliado para mejor accesibilidad)
 
   void UpdateDash(float dt) {
     if (dashCooldown1 > 0) {
@@ -95,4 +102,44 @@ public:
   virtual std::string GetSpecialStatus() const { return ""; }
   virtual bool IsBuffed() const { return false; }
   virtual float GetBuffTimer() const { return 0.0f; }
+
+  // --- Souls-like Combat Mechanics ---
+  bool isStaggered = false;
+  float staggerTimer = 0.0f;
+
+  // Perfect Dodge: Buffed state after a frame-perfect dodge
+  bool hasPerfectDodgeBuff = false;
+  float perfectDodgeTimer = 0.0f;
+  bool isPerfectCounter = false; // Indica si el ataque actual es un contraataque de esquiva perfecta
+
+  // Callback to be implemented by scenes for visual effects
+  static void (*OnPerfectDodge)(Vector2 pos); 
+
+  virtual void CancelAttack() = 0;
+
+  virtual void TakeDamage(float amount, Vector2 pushVel) {
+      if (IsImmune()) {
+          // Check for perfect dodge
+          if (m_dashTimer <= PERFECT_DODGE_WINDOW && !hasPerfectDodgeBuff) {
+              hasPerfectDodgeBuff = true;
+              perfectDodgeTimer = 5.0f; // Buff lasts 5 seconds
+              if (OnPerfectDodge) OnPerfectDodge(position);
+          }
+          return;
+      }
+      
+      hp -= amount;
+      velocity = Vector2Add(velocity, pushVel);
+      
+      // Souls-like Stagger: Interrumpe el ataque si estabas cargandolo o en su startup
+      if (attackPhase == AttackPhase::STARTUP || isCharging) {
+          isStaggered = true;
+          staggerTimer = 0.45f;
+          hitFlashTimer = 0.25f; // Feedback visual de stagger
+          CancelAttack();
+      } else {
+          // Si no está en STARTUP, recibe daño normal pero no se interrumpe permanentemente
+          hitFlashTimer = 0.15f; 
+      }
+  }
 };

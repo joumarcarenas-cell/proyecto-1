@@ -44,7 +44,7 @@ public:
         spawnPos = pos;
         position = pos;
         radius  = 40.0f;
-        maxHp   = 2000.0f;
+        maxHp   = 3200.0f;
         hp      = maxHp;
         color   = {80, 0, 180, 255}; // Violeta profundo
 
@@ -182,8 +182,7 @@ public:
         }
 
         // Colisión de orbitales con el jugador (daño de contacto)
-        if (!player.IsImmune()) {
-            for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 4; i++) {
                 if (!orbitals[i].active) continue;
                 float rad = orbitals[i].angle * DEG2RAD;
                 Vector2 orbPos = {
@@ -195,7 +194,6 @@ public:
                     player.hp -= dmg * dt; // DoT de contacto
                 }
             }
-        }
     }
 
     void ScaleDifficulty(int wave) override {

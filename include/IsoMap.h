@@ -26,12 +26,10 @@
 // del sprite de pasto (diamond / rombo isométrico).
 namespace IsoMap {
 
-constexpr int MAP_COLS = 20;     // Número de columnas de la matriz
-constexpr int MAP_ROWS = 20;     // Número de filas   de la matriz
-constexpr float TILE_W = 140.0f; // Ancho  del tile (ajustado para calzar a lo
-                                 // ancho de la arena = 2800)
-constexpr float TILE_H = 70.0f;  // Alto   del tile (ajustado para calzar a lo
-                                 // alto de la arena = 1400)
+constexpr int MAP_COLS = 30;     // Número de columnas de la matriz
+constexpr int MAP_ROWS = 30;     // Número de filas   de la matriz
+constexpr float TILE_W = 140.0f; // Ancho  del tile
+constexpr float TILE_H = 70.0f;  // Alto   del tile
 
 // ── Tipo de celda del mapa ─────────────────────────────────────────────
 // 0 = vacío (no se renderiza), 1 = pasto, 2+ = reservado para
@@ -73,5 +71,8 @@ inline Vector2 IsoToScreen(int col, int row, Vector2 offset) {
 //   • Solo llama a DrawTexturePro cuando TileID != 0 (evita draws vacíos).
 //   • sourceRec y destRec se calculan una sola vez por tile.
 void DrawIsoMap(const Map &map, const Texture2D &texPasto, Vector2 offset);
+
+// Helper procedimental para dibujar enredaderas en las paredes (usado por DrawArena)
+void DrawVines(Vector2 p1, Vector2 p2, Vector2 p3, Vector2 p4, float seed);
 
 } // namespace IsoMap

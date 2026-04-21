@@ -1,6 +1,7 @@
 #pragma once
 #include "Entity.h"
 #include "CommonTypes.h"
+#include "graphics/VFXSystem.h"
 
 class Player;
 
@@ -17,6 +18,10 @@ public:
   float recentDamageTimer = 0.0f;
   Vector2 facing = {1, 0};
   bool hasHit = false;
+  bool desperationResists = false;
+  bool desperationImmune = false; // Invulnerabilidad durante la avalancha del 10%
+  bool isStaggered = false;
+  float staggerTimer = 0.0f;
 
   // ── Mecánica Pasiva Estática (Elemental Mage) ──────────────────────
   int staticStacks = 0;
@@ -24,6 +29,7 @@ public:
   ElementMode lastElementHit = ElementMode::NONE;
 
   virtual void ApplyElement(ElementMode element) {
+    if (desperationResists) return; // Inmune a DoT en fase final
     if (element != ElementMode::NONE) {
       lastElementHit = element;
       staticTimer = 7.0f;
@@ -44,11 +50,45 @@ public:
   virtual void UpdateAI(Player &player) = 0;
   virtual void ScaleDifficulty(int wave) = 0;
 
+  virtual void TakeDamage(float dmg, float poiseDmg, Vector2 pushVel) {
+    if (isDead || isDying || IsInvulnerable()) return;
+    
+    // Si estamos en medio de una fase crítica (avalanche/desperation), protegemos el poise
+    // Esto es un comportamiento por defecto razonable para Bosses.
+    bool poiseProtected = desperationResists;
+
+    if (!poiseProtected) {
+        if (!isStaggered) {
+            poiseCurrent -= poiseDmg;
+            poiseRegenTimer = 5.0f;
+            if (poiseCurrent <= 0) {
+                poiseCurrent = poiseMax;
+                isStaggered = true;
+                staggerTimer = 1.5f;
+                // VFX for posture break
+                Graphics::SpawnImpactBurst(position, {0, -1}, GOLD, WHITE, 25, 10);
+            }
+        }
+    }
+
+    hp -= dmg;
+    velocity = Vector2Add(velocity, pushVel);
+    recentDamage += dmg;
+    recentDamageTimer = 1.0f;
+    hitFlashTimer = 0.15f;
+  }
+
+  // ── Mecánica de Poise (Equilibrio / Stagger) ──────────────────────
+  float poiseCurrent = 300.0f;
+  float poiseMax = 300.0f;
+  float poiseRegenTimer = 0.0f;
+
   virtual void ApplyBleed() {
+    if (desperationResists) return; // Inmune a DoT en fase final
     isBleeding = true;
     bleedTimer = 10.0f;
     bleedTickTimer = 0.5f;
-    bleedTotalDamage = (maxHp * 0.05f) / 10.0f;
+    bleedTotalDamage = 16.0f; // Daño fijo por tick en lugar de % para evitar que se rompa con mucha vida
   }
 
   virtual float GetRemainingBleedDamage() const {
@@ -72,10 +112,26 @@ public:
         recentDamage = 0;
     }
 
+    if (isStaggered) {
+        staggerTimer -= dt;
+        if (staggerTimer <= 0) {
+            isStaggered = false;
+        }
+    } else {
+        if (poiseRegenTimer > 0) {
+            poiseRegenTimer -= dt;
+        } else if (poiseCurrent < poiseMax) {
+            poiseCurrent += (poiseMax * 0.1f) * dt; // 10s back to full
+            if (poiseCurrent > poiseMax) poiseCurrent = poiseMax;
+        }
+    }
+
     if (hitFlashTimer > 0) hitFlashTimer -= dt;
     if (stunTimer > 0) stunTimer -= dt;
     if (slowTimer > 0) slowTimer -= dt;
   }
 
   virtual bool IsInvulnerable() const { return false; }
+  // Eje Z Falso: altura visual (p.ej. salto del Golem)
+  virtual float GetFakeZ() const { return 0.0f; }
 };

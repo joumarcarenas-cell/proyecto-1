@@ -56,11 +56,11 @@ void SimpleKnight::UpdateAI(Player& player) {
 
     case AIState::ATTACK_COMBO:
         stateTimer -= dt * atkSpeedMult;
-        if (!hasHit && !player.IsImmune()) {
+        if (!hasHit) {
             float prog = CombatUtils::GetProgress(stateTimer, 0.4f) * 1.4f;
             if (prog > 1.0f) prog = 1.0f;
             if (CombatUtils::CheckProgressiveSweep(position, facing, player.position, player.radius, 90.0f, -45.0f, 90.0f, 1.0f, prog)) {
-                player.hp -= 10.0f;
+                player.TakeDamage(10.0f, {0, 0});
                 Graphics::SpawnImpactBurst(player.position, facing, color, WHITE, 5, 2);
                 hasHit = true;
             }
@@ -186,7 +186,7 @@ void GreatswordElite::UpdateAI(Player& player) {
 
     case AIState::ATTACK_COMBO: {
         stateTimer -= dt * cdMult;
-        if (!hasHit && !player.IsImmune()) {
+        if (!hasHit) {
             float totalActive = 0.6f;
             float prog = CombatUtils::GetProgress(stateTimer, totalActive) * 1.4f;
             if (prog > 1.0f) prog = 1.0f;
@@ -207,12 +207,9 @@ void GreatswordElite::UpdateAI(Player& player) {
 
             if (CombatUtils::CheckProgressiveSweep(position, facing, player.position, player.radius, 145.0f, startOff, sweepDeg, sweepDir, prog)) {
                 float dmg = (comboStep == 2) ? 35.0f : 20.0f;
-                player.hp -= dmg;
-                
-                // Empuje dinámico según el tajo
                 Vector2 pushDir = facing;
                 if (comboStep == 2) pushDir = Vector2Scale(pushDir, 1.5f);
-                player.velocity = Vector2Add(player.velocity, Vector2Scale(pushDir, 400.0f));
+                player.TakeDamage(dmg, Vector2Scale(pushDir, 400.0f));
                 
                 Graphics::SpawnImpactBurst(player.position, facing, color, WHITE, 8, 4);
                 hasHit = true;
@@ -245,10 +242,10 @@ void GreatswordElite::UpdateAI(Player& player) {
         if (progressArr > 1.0f) progressArr = 1.0f;
         float totalDegArr = 1080.0f; // 3 vueltas completas
         
-        if (whirlwindHitCooldown <= 0 && !player.IsImmune()) {
+        if (whirlwindHitCooldown <= 0) {
             // CheckProgressiveSweep detectará cuando la "manecilla" del reloj (la espada) pase por el jugador
             if (CombatUtils::CheckProgressiveSweep(position, facing, player.position, player.radius, 130.0f, 0.0f, totalDegArr, 1.0f, progressArr)) {
-                player.hp -= 18.0f;
+                player.TakeDamage(18.0f, {0, 0});
                 whirlwindHitCooldown = 0.25f; // Evita multihits en el mismo frame de paso
                 screenShake = fmaxf(screenShake, 0.6f);
                 Graphics::SpawnImpactBurst(player.position, facing, color, WHITE, 5, 2);
@@ -269,9 +266,8 @@ void GreatswordElite::UpdateAI(Player& player) {
             if (Vector2Length(velocity) < 500.0f) {
                 velocity = Vector2Scale(facing, 1250.0f);
             }
-            if (!hasHit && !player.IsImmune() && CombatUtils::CheckProgressiveRadial(position, player.position, player.radius, 80.0f, 1.0f)) {
-                player.hp -= 25.0f;
-                player.velocity = Vector2Scale(facing, 1000.0f);
+            if (!hasHit && CombatUtils::CheckProgressiveRadial(position, player.position, player.radius, 80.0f, 1.0f)) {
+                player.TakeDamage(25.0f, Vector2Scale(facing, 1000.0f));
                 hasHit = true;
                 aiState = AIState::CHASE;
                 attackCooldown = 3.5f; // Mas castigo por fallar/acertar
@@ -455,8 +451,8 @@ void SimplyArcher::Update() {
         a.pos = Vector2Add(a.pos, Vector2Scale(a.dir, a.speed * dt));
         
         // Colision
-        if (!a.hasDealtDamage && !m_cachedPlayer->IsImmune() && CombatUtils::CheckProgressiveRadial(a.pos, m_cachedPlayer->position, m_cachedPlayer->radius, 20.0f, 1.0f)) {
-            m_cachedPlayer->hp -= a.damage;
+        if (!a.hasDealtDamage && CombatUtils::CheckProgressiveRadial(a.pos, m_cachedPlayer->position, m_cachedPlayer->radius, 20.0f, 1.0f)) {
+            m_cachedPlayer->TakeDamage(a.damage, {0, 0});
             a.hasDealtDamage = true;
             if (!a.isCharged) a.active = false; 
             Graphics::SpawnImpactBurst(a.pos, a.dir, {100, 255, 100, 255}, WHITE, 5, 2);

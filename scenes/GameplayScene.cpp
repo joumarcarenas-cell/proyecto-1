@@ -35,6 +35,8 @@ extern Reaper g_reaper;
 extern Ropera g_ropera;
 extern Player *g_activePlayer;
 
+void (*Player::OnPerfectDodge)(Vector2 pos) = nullptr;
+
 namespace Scenes {
 
 // ─── Init ─────────────────────────────────────────────────────────────────
@@ -54,14 +56,28 @@ void GameplayScene::Init() {
     delete m_bossQueue.front();
     m_bossQueue.pop();
   }
-
   // Reiniciar estado de oleada
   m_currentWave = 1;
   m_bossXpAwarded = false;
   m_nextBossTimer = 0.0f;
   m_showLevelUpMenu = false;
 
-  // Reiniciar estado de victoria y cronómetro
+  // Reiniciar estado de match y cronómetro
+  m_matchState = MatchState::INTRO;
+  m_stateTimer = 2.5f;             // 2.5s de emergencia del suelo
+  m_bossIntroOffset = 250.0f;      // Empieza bajo tierra
+  m_targetZoom = 1.22f;
+  m_camera.zoom = m_targetZoom;
+
+  // Set Perfect Dodge Callback
+  Player::OnPerfectDodge = [](Vector2 pos) {
+      // Feedback visual global
+      // Feedback visual global - Removed SpawnFlash
+      AnimeVFX::PostProcessPipeline::Get().SpawnRipple(pos, 0.65f);
+      hitstopTimer = 0.15f; // Breve pausa dramática
+      screenShake = fmaxf(screenShake, 3.0f);
+  };
+  
   m_isVictory = false;
   m_victoryTimer = 0.0f;
   m_totalGameTime = 0.0f;
@@ -76,7 +92,7 @@ void GameplayScene::Init() {
   m_waveTextTimer   = 3.5f;
 
   // Llenar cola inicial: Golem -> ELITE WAVE -> etc.
-  m_boss = new Enemy({2000, 1600}); // Lejos del jugador para no aparecer encima
+  m_boss = new Enemy({Arena::CENTER_X, Arena::CENTER_Y - 250.0f}); // Más cerca para visibilidad inicial
   m_aliveBosses.push_back(m_boss);
   m_bossGhostHp = m_boss->hp;
 
@@ -85,13 +101,15 @@ void GameplayScene::Init() {
   // ── Inicializar mapa isométrico de pasto ────────────────────────
   IsoMap::InitDefaultMap(m_isoMap);
 
-  m_isoMapOffset = {2000.0f, 1300.0f};
+  // Offset para centrar un mapa de 30x30 en (2000, 2000)
+  // offsetY = 2000 - (30 * TILE_H/2) = 2000 - 1050 = 950
+  m_isoMapOffset = {Arena::CENTER_X, Arena::CENTER_Y - 1050.0f};
 
   m_camera.target = m_activePlayer->position;
   m_camera.offset = {(float)GetScreenWidth() * 0.5f,
                      (float)GetScreenHeight() * 0.5f};
   m_camera.rotation = 0.0f;
-  m_camera.zoom = 1.35f;
+  m_camera.zoom = 1.22f;
 
   isTimeStopped = false;
   hitstopTimer = 0.0f;
@@ -111,8 +129,8 @@ void GameplayScene::Init() {
   m_trailIdMage   = AnimeVFX::AnimeTrailSystem::Get().Register({ 80, 180, 255, 255}, 24.0f); // Azul
   m_trailIdPlayer = m_trailIdReaper; // default
 
-  // ── Sistema de ambiente: arena diamante de 1400px radio ───────
-  AnimeVFX::AmbientSystem::Get().Init({ 2000, 2000 }, 1400.0f);
+  // ── Sistema de ambiente: arena diamante de RADIUS px radio ───────
+  AnimeVFX::AmbientSystem::Get().Init({ Arena::CENTER_X, Arena::CENTER_Y }, Arena::RADIUS);
 
   m_prevDashCharges = (float)m_activePlayer->dashCharges;
 
@@ -121,17 +139,21 @@ void GameplayScene::Init() {
   else
     HideCursor();
 
-  m_showVersion = false;
   m_versionTimer = 0.0f;
+
 }
 
 // ─── Update
 // ─────────────────────────────────────────────────────────────────────
 void GameplayScene::Update(float dt) {
   // ── Victoria: el juego está congelado, solo mostrar la pantalla ──────────
-  if (m_isVictory) {
+  // [NEW] MATCH STATE MACHINE
+  if (m_matchState == MatchState::MATCH_ENDED) {
     m_victoryTimer += dt;
-    // Permitir volver al menu o reiniciar
+    // Congelar velocidades
+    if (m_activePlayer) m_activePlayer->velocity = {0,0};
+    for (auto* b : m_aliveBosses) if (b) b->velocity = {0,0};
+
     if (IsKeyPressed(KEY_R)) { Init(); }
     if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_K)) {
       SceneManager::Get().ChangeScene(std::make_unique<MainMenuScene>());
@@ -155,6 +177,11 @@ void GameplayScene::Update(float dt) {
   if (IsKeyPressed(KEY_P)) {
     Init();
     return;
+  }
+
+  // ── Hitbox Visualizer Toggle (F1) ───────────────────────────────────
+  if (IsKeyPressed(KEY_F1)) {
+      g_showHitboxes = !g_showHitboxes;
   }
 
   // ── Verificación de Versión (F5) ──────────────────────────────────────
@@ -188,24 +215,90 @@ void GameplayScene::Update(float dt) {
   // Capturar posición del mouse en coordenadas de mundo
   m_activePlayer->targetAim = GetScreenToWorld2D(GetMousePosition(), m_camera);
 
-  // ── Lógica de juego (no durante hitstop) ──────────────────────────────
-  if (hitstopTimer <= 0) {
+  // --- MANUAL ZOOM (Mouse Wheel) ---
+  float wheel = GetMouseWheelMove();
+  if (wheel != 0) {
+      m_targetZoom += wheel * 0.12f;
+      m_targetZoom = fmaxf(0.5f, fminf(m_targetZoom, 2.8f)); // Límites de zoom
+  }
+
+  // ── Lógica de juego (no durante hitstop ni estados PRE-COMBAT) ──────────────
+  bool canCombat = (m_matchState == MatchState::COMBAT);
+
+  // MANEJO DE ESTADOS CINEMÁTICOS
+  if (m_matchState == MatchState::INTRO) {
+    m_stateTimer -= dt;
+    m_bossIntroOffset = Lerp(m_bossIntroOffset, 0, 4.0f * dt);
+    screenShake = fmaxf(screenShake, 3.5f);
+    
+    // Partículas de suelo/polvo
+    if (m_boss && GetRandomValue(0, 100) < 60) {
+        for (int i=0; i<3; i++) {
+            Vector2 pPos = { m_boss->position.x + GetRandomValue(-60, 60), m_boss->position.y + GetRandomValue(-20, 20) };
+            Graphics::VFXSystem::GetInstance().SpawnFull(
+                pPos, { (float)GetRandomValue(-100, 100), (float)GetRandomValue(-150, -50) }, 
+                0.8f, {150, 130, 110, 255}, {100, 80, 60, 0}, (float)GetRandomValue(4, 10),
+                Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.94f, (float)GetRandomValue(0, 360), 20.0f
+            );
+        }
+    }
+
+    if (m_stateTimer <= 0) {
+      m_matchState = MatchState::ANNOUNCEMENT;
+      m_stateTimer = 2.0f;
+      m_bossIntroOffset = 0.0f; // Asegurar que llega a cero
+      // Disparar anuncio justo después de salir del suelo
+      m_waveTextTimer = 3.5f; 
+    }
+  } 
+  else if (m_matchState == MatchState::ANNOUNCEMENT) {
+    m_stateTimer -= dt;
+    if (m_stateTimer <= 0) {
+      m_matchState = MatchState::COMBAT;
+    }
+  }
+
+  // UPDATE DE ENTIDADES
+  if (canCombat && hitstopTimer <= 0) {
     m_activePlayer->Update();
     if (m_boss)
       m_activePlayer->HandleSkills(*m_boss);
+  } else {
+    // Si no es combate, el jugador no se mueve
+    m_activePlayer->velocity = {0, 0}; 
+  }
+
+  // Update dash timer for perfect dodge detection
+  if (m_activePlayer->IsImmune()) {
+      m_activePlayer->m_dashTimer += dt;
+  } else {
+      m_activePlayer->m_dashTimer = 0.0f;
+  }
+
+  // Update perfect dodge buff timer
+  if (m_activePlayer->hasPerfectDodgeBuff) {
+      m_activePlayer->perfectDodgeTimer -= dt;
+      if (m_activePlayer->perfectDodgeTimer <= 0) {
+          m_activePlayer->hasPerfectDodgeBuff = false;
+      }
   }
 
   UpdateBleedDoT(dt);
-
   UpdateBossRush(dt);
 
   for (auto *b : m_aliveBosses) {
-    if (b && !b->isDead && !isTimeStopped) {
+    if (b && !b->isDead && !isTimeStopped && canCombat) {
       b->UpdateAI(*m_activePlayer);
     }
     if (b && !isTimeStopped) {
+      // Mantenemos Update de estatus (sangrado etc) pero solo fisica si es combate
       b->UpdateBossStatus(dt);
-      b->Update();
+      if (canCombat || m_matchState == MatchState::INTRO) {
+          b->Update(); // Update fisico necesario para que b->position sea consistente
+      }
+      if (!canCombat && m_matchState != MatchState::INTRO) {
+          b->velocity = {0,0};
+      }
     }
   }
   // TODO: UpdateRocks for all enemies if they have them,
@@ -244,6 +337,8 @@ void GameplayScene::Update(float dt) {
       en->baseAttackCooldown = en->baseAttackCooldown * 0.8f;
     }
   }
+
+
 
   // ── Colisiones ────────────────────────────────────────────────────────
   UpdateCollisions();
@@ -376,7 +471,10 @@ void GameplayScene::UpdateBossRush(float dt) {
     m_waveText    = "OLEADA 2";
     m_waveSubText = "HORDA DE ÉLITE";
     m_waveTextIsStart = true;
-    m_waveTextTimer   = 3.5f;
+    // Anuncio diferido via State Machine
+    m_matchState = MatchState::INTRO;
+    m_stateTimer = 2.5f;
+    m_bossIntroOffset = 250.0f;
 
   } else if (m_currentWave == 2) {
     // Oleada 3: Boss Final - Ether Corrupto
@@ -389,10 +487,13 @@ void GameplayScene::UpdateBossRush(float dt) {
     m_waveText    = "OLEADA FINAL";
     m_waveSubText = "ETHER CORRUPTO DESPIERTA";
     m_waveTextIsStart = true;
-    m_waveTextTimer   = 4.0f;
 
     screenShake = 5.0f;
-    AnimeVFX::PostProcessPipeline::Get().SpawnFlash(0.3f);
+    
+    // Anuncio diferido via State Machine
+    m_matchState = MatchState::INTRO;
+    m_stateTimer = 2.5f;
+    m_bossIntroOffset = 250.0f;
 
   } else {
     // Todas las oleadas completadas → Victoria
@@ -421,6 +522,9 @@ void GameplayScene::UpdateCamera(float dt) {
       (m_activePlayer->position.x - m_camera.target.x) * lerpCoeff;
   m_camera.target.y +=
       ((m_activePlayer->position.y - 40.0f) - m_camera.target.y) * lerpCoeff;
+
+  // Zoom lerp
+  m_camera.zoom += (m_targetZoom - m_camera.zoom) * 8.0f * dt;
 }
 
 // ─── UpdateBleedDoT ───────────────────────────────────────────────────────
@@ -436,8 +540,8 @@ void GameplayScene::UpdateBleedDoT(float dt) {
     b->bleedTickTimer -= dt;
 
     if (b->bleedTickTimer <= 0) {
-      b->bleedTickTimer = 0.5f;      // Tick cada 0.5s
-      float dmg = b->maxHp * 0.015f; // 1.5% de vida máxima
+      b->bleedTickTimer = 0.5f;      
+      float dmg = (b->maxHp * 0.003f) + 12.0f; // [BALANCE] Gran nerf: de 1.5% maxHp a 0.3% + 12 bases por tick
       b->hp -= dmg;
 
       // Partículas de sangre
@@ -501,11 +605,14 @@ void GameplayScene::UpdateCollisions() {
 
     float prevHp = b->hp;
     m_activePlayer->CheckCollisions(*b);
+
     float dmg = prevHp - b->hp;
 
     if (dmg > 0) {
-      // Crítico
-      bool isCrit = m_activePlayer->rpg.RollCrit();
+      // Crítico: Forzado por Suerte RPG o por Estado Vulnerable (Stagger)
+      bool isStaggered = b->isStaggered;
+      bool isCrit = m_activePlayer->rpg.RollCrit() || isStaggered;
+
       if (isCrit) {
         float critExtra = dmg * (RPGStats::CRIT_MULTIPLIER - 1.0f);
         b->hp -= critExtra;
@@ -538,7 +645,8 @@ void GameplayScene::UpdateCollisions() {
                                isCrit ? 1.3f : 1.0f,
                                isCrit ? 1.3f : 1.0f,
                                (int)dmg,
-                               finalColor});
+                               finalColor,
+                               isCrit});
 
       if (isCrit) {
         m_damageTexts.push_back({{b->position.x, b->position.y - 30.0f},
@@ -546,15 +654,15 @@ void GameplayScene::UpdateCollisions() {
                                  0.9f,
                                  0.9f,
                                  -1,
-                                 {255, 240, 60, 255}});
+                                 {255, 240, 60, 255},
+                                 true});
       }
 
       screenShake = fmaxf(screenShake, dmg * 0.008f + (isCrit ? 1.0f : 0.0f)); // Reducido (era 0.012 y 1.5)
       b->hitFlashTimer = 0.18f;
       if (isCrit) {
         hitstopTimer = 0.10f;
-        // Flash blanco + Ripple de shockwave en el punto de impacto
-        AnimeVFX::PostProcessPipeline::Get().SpawnFlash(0.05f);
+        // Ripple de shockwave en el punto de impacto
         AnimeVFX::PostProcessPipeline::Get().SpawnRipple(b->position, 0.45f);
       }
 
@@ -576,8 +684,14 @@ void GameplayScene::UpdateDeathCheck() {
     if (b && !b->isDead)
       anyBossAlive = true;
 
-  if (m_activePlayer->hp <= 0.0f || !anyBossAlive) {
+  if (m_activePlayer->hp <= 0.0f) {
+    m_matchState = MatchState::MATCH_ENDED;
     ShowCursor();
+  }
+  
+  if (!anyBossAlive && m_matchState == MatchState::COMBAT) {
+     // Si todos mueren y estamos en combate, el match ha terminado (o wave clear)
+     // El sistema de BossRush manejará el paso a la siguiente oleada.
   }
 }
 
@@ -611,26 +725,39 @@ void GameplayScene::DrawWorld() {
   // Speed Lines del dash (en espacio mundo, sobre el suelo)
   AnimeVFX::SpeedLineSystem::Get().Draw();
 
-  // --- SISTEMA DE SOMBRAS PROYECTADAS (SOL DESDE NW) ---
-  auto DrawProjectedShadow = [](Vector2 pos, float r) {
+  // --- SISTEMA DE SOMBRAS PROYECTADAS DINAMICAS (Sol desde NW, 3D falso) ---
+  // z = altura virtual del personaje (0 = en el suelo, >0 = en el aire).
+  // Cuando z > 0: la sombra se aleja, se encoge y se vuelve mas transparente,
+  // dando la ilusion de que el personaje esta por encima del suelo.
+  auto DrawProjectedShadow = [](Vector2 pos, float r, float z) {
+    // La sombra ES la proyeccion del sol: se desplaza con z
+    // Desplazamiento base: sol desde NW (+15, +10)
+    // A mayor altura, la sombra se aleja mas del personaje
+    const float MAX_Z        = 450.0f;  // altura ref. del Golem en su salto
+    float zFrac = fminf(z / MAX_Z, 1.0f);
+
+    float shadowOffX = 15.0f + zFrac * 55.0f;  // se mueve hacia la derecha (sol NW)
+    float shadowOffY = 10.0f + zFrac * 28.0f;  // se mueve hacia abajo
+    float shadowScale = 1.0f - zFrac * 0.55f;  // encoge al 45% del tamaño original
+    float shadowAlpha = 0.40f - zFrac * 0.28f; // mas transparente en el aire
+
     Graphics::RenderManager::GetInstance().Submit(
         pos.y - 1.0f,
-        [pos, r]() {
-          // Sombra ovalada e inclinada para simular sol direccional
+        [pos, r, shadowOffX, shadowOffY, shadowScale, shadowAlpha]() {
           rlPushMatrix();
-          rlTranslatef(pos.x + 15, pos.y + 10,
-                       0); // Desplazamiento de la sombra
-          rlScalef(1.4f, 0.6f, 1.0f);
+          rlTranslatef(pos.x + shadowOffX, pos.y + shadowOffY, 0);
+          rlScalef(1.4f * shadowScale, 0.6f * shadowScale, 1.0f);
           rlRotatef(-20.0f, 0, 0, 1);
-          DrawCircle(0, 0, r, Fade(BLACK, 0.4f));
+          DrawCircle(0, 0, r, Fade(BLACK, shadowAlpha));
           rlPopMatrix();
         },
         Graphics::RenderLayer::BACKGROUND);
   };
 
-  DrawProjectedShadow(m_activePlayer->position, m_activePlayer->radius);
+  float playerZ = m_activePlayer->GetFakeZ();
+  DrawProjectedShadow(m_activePlayer->position, m_activePlayer->radius, playerZ);
   if (m_boss && !m_boss->isDead)
-    DrawProjectedShadow(m_boss->position, m_boss->radius);
+    DrawProjectedShadow(m_boss->position, m_boss->radius, m_boss->GetFakeZ());
 
   // --- INDICADORES DE HURTBOX (HITBOX DE COLISIÓN) ---
   auto DrawHurtbox = [](Vector2 pos, float r, Color col) {
@@ -669,7 +796,13 @@ void GameplayScene::DrawWorld() {
   for (auto *b : m_aliveBosses) {
     if (b && !b->isDead) {
       Graphics::RenderManager::GetInstance().Submit(b->GetZDepth(),
-                                                    [b]() { b->Draw(); });
+                                                    [b, this]() { 
+                                                      rlPushMatrix();
+                                                      // [NEW] Efecto de emergencia: offset vertical visual
+                                                      rlTranslatef(0, m_bossIntroOffset, 0);
+                                                      b->Draw(); 
+                                                      rlPopMatrix();
+                                                    });
     }
   }
 
@@ -723,9 +856,12 @@ void GameplayScene::DrawWorld() {
 
 // ─── DrawArena ────────────────────────────────────────────────────────────
 void GameplayScene::DrawArena() {
-  Vector2 pN = {2000, 1300}, pS = {2000, 2700};
-  Vector2 pE = {3400, 2000}, pW = {600, 2000};
-  float wh = 160.0f; // Un poco más altas para que luzcan mejor
+  // Los puntos cardinales de la arena ahora se basan en el radio dinámico
+  Vector2 pN = { Arena::CENTER_X, Arena::CENTER_Y - Arena::RADIUS * 0.5f };
+  Vector2 pS = { Arena::CENTER_X, Arena::CENTER_Y + Arena::RADIUS * 0.5f };
+  Vector2 pE = { Arena::CENTER_X + Arena::RADIUS, Arena::CENTER_Y };
+  Vector2 pW = { Arena::CENTER_X - Arena::RADIUS, Arena::CENTER_Y };
+  float wh = 200.0f; // Muros más imponentes
 
   // 1. SUELO (Capa BACKGROUND)
   Graphics::RenderManager::GetInstance().Submit(
@@ -792,25 +928,36 @@ void GameplayScene::DrawArena() {
       Graphics::RenderLayer::BACKGROUND);
 
   // 2. PAREDES (Capa WORLD)
-  auto DrawWallSegment = [wh](Vector2 b1, Vector2 b2, Color tint) {
+  auto DrawWallSegment = [wh, this](Vector2 b1, Vector2 b2, Color tint, float seed) {
     Graphics::RenderManager::GetInstance().Submit(
         fminf(b1.y, b2.y) - 5.0f,
-        [b1, b2, wh, tint]() {
+        [b1, b2, wh, tint, seed]() {
           if (ResourceManager::texPared.id != 0) {
             float len = Vector2Distance(b1, b2);
             rlSetTexture(ResourceManager::texPared.id);
             rlBegin(RL_QUADS);
             rlColor4ub(tint.r, tint.g, tint.b, tint.a);
-            rlTexCoord2f(0, 1);
+            
+            // UVs ajustadas para que los ladrillos se vean naturales (tiling de 128px)
+            float uvLen = len / 128.0f;
+            float uvHeight = wh / 128.0f;
+
+            rlTexCoord2f(0, uvHeight);
             rlVertex2f(b1.x, b1.y);
-            rlTexCoord2f(len / 256.0f, 1);
+            rlTexCoord2f(uvLen, uvHeight);
             rlVertex2f(b2.x, b2.y);
-            rlTexCoord2f(len / 256.0f, 0);
+            rlTexCoord2f(uvLen, 0);
             rlVertex2f(b2.x, b2.y - wh);
             rlTexCoord2f(0, 0);
             rlVertex2f(b1.x, b1.y - wh);
             rlEnd();
             rlSetTexture(0);
+
+            // Procedural Vines (integradas en el submit para profundidad correcta)
+            Vector2 t1 = {b1.x, b1.y - wh};
+            Vector2 t2 = {b2.x, b2.y - wh};
+            IsoMap::DrawVines(t1, t2, b2, b1, seed);
+
           } else {
             DrawQuad(b1, b2, {b2.x, b2.y - wh}, {b1.x, b1.y - wh}, tint);
           }
@@ -820,7 +967,7 @@ void GameplayScene::DrawArena() {
         Graphics::RenderLayer::WORLD);
   };
 
-  const int segments = 12;
+  const int segments = 15; // Más segmentos para el nuevo tamaño
   for (int i = 0; i < segments; i++) {
     float t1 = (float)i / segments;
     float t2 = (float)(i + 1) / segments;
@@ -828,12 +975,12 @@ void GameplayScene::DrawArena() {
     // Pared Noroeste (W -> N)
     Vector2 w1 = Vector2Lerp(pW, pN, t1);
     Vector2 w2 = Vector2Lerp(pW, pN, t2);
-    DrawWallSegment(w1, w2, WHITE);
+    DrawWallSegment(w1, w2, WHITE, (float)i * 1.5f);
 
     // Pared Noreste (N -> E)
     Vector2 e1 = Vector2Lerp(pN, pE, t1);
     Vector2 e2 = Vector2Lerp(pN, pE, t2);
-    DrawWallSegment(e1, e2, ColorBrightness(WHITE, -0.15f));
+    DrawWallSegment(e1, e2, ColorBrightness(WHITE, -0.15f), (float)i * 2.2f);
   }
 
   // Bordes de la arena en el suelo

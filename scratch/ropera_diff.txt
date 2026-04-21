@@ -1,0 +1,1072 @@
+﻿diff --git a/Ropera.cpp b/Ropera.cpp
+index 19e90a9..0a44f16 100644
+--- a/Ropera.cpp
++++ b/Ropera.cpp
+@@ -8,6 +8,8 @@
+ // - R (Garras, <60% hp): espadas detras que se disparan escalonadas al golpear
+ // =====================================================
+ // =====================================================
++#include "include/graphics/VFXSystem.h"
++#include "include/graphics/AnimeVFX.h"
+ #include "include/Ropera.h"
+ #include "include/CommonTypes.h"
+ #include "include/boss.h"
+@@ -19,8 +21,6 @@
+ #include <string>
+ #include <vector>
+ 
+-#include "include/graphics/VFXSystem.h"
+-
+ // ÔöÇÔöÇÔöÇ Perp 2D ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+ static Vector2 Perp2D(Vector2 v) { return {-v.y, v.x}; }
+ 
+@@ -104,7 +104,7 @@ void Ropera::UpdateSwords(float dt, Boss &boss) {
+         // Lleg├│ al objetivo
+         if (!swords[i].hasDealt && !boss.isDead && !boss.IsInvulnerable()) {
+           lastDamageType = DamageType::MAGICAL;
+-          boss.hp -= (swordHitDamage * rpg.DamageMultiplierMagical());
++          boss.TakeDamage(swordHitDamage * rpg.DamageMultiplierMagical(), 2.0f, {0, 0});
+           swords[i].hasDealt = true;
+           swords[i].flashTimer = 0.20f;
+           // Particulas de impacto
+@@ -149,12 +149,40 @@ void Ropera::UpdateSwords(float dt, Boss &boss) {
+ // UPDATE
+ // =====================================================
+ void Ropera::Update() {
++  if (hp <= 0) {
++      velocity = {0, 0};
++      return;
++  }
+   float dt = GetFrameTime() * g_timeScale;
+ 
++  if (energy < maxEnergy)
++    energy += 4.0f * dt;
++
++  // [NEW] SLOW MOTION durante la r├ífaga de cargados en Ultimate
++  if (ultActive && state == RoperaState::HEAVY_ATTACK) {
++      g_timeScale = Lerp(g_timeScale, 0.35f, 12.0f * GetFrameTime());
++  } else if (ultActive && state != RoperaState::HEAVY_ATTACK && g_timeScale < 0.9f) {
++      // Restaurar suavemente al terminar la r├ífaga
++      g_timeScale = Lerp(g_timeScale, 1.0f, 6.0f * GetFrameTime());
++  }
++
+   // ÔöÇÔöÇ Cooldowns globales ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+   if (hitFlashTimer > 0)
+     hitFlashTimer -= dt;
+   UpdateDash(dt);
++
++  // ÔöÇÔöÇ Handling Stagger ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++  if (isStaggered) {
++      staggerTimer -= dt;
++      if (staggerTimer <= 0.0f) isStaggered = false;
++      
++      velocity = Vector2Scale(velocity, 0.85f); // Frenado r├ípido del knockback
++      Vector2 np = Vector2Add(position, Vector2Scale(velocity, dt));
++      position = Arena::GetClampedPos(np, radius);
++      
++      return; // Bloquea el resto de ejecuci├│n (input, ataque, skills)
++  }
++
+   if (qCooldown > 0)
+     qCooldown -= dt;
+   if (eCooldown > 0)
+@@ -221,9 +249,29 @@ void Ropera::Update() {
+     if (GetRandomValue(0, 100) < 60) {
+       Graphics::SpawnDashTrail(position);
+     }
++    
++    // [NEW] Speed Streamers durante el dash
++    if (GetRandomValue(0, 100) < 35) {
++        Graphics::SpawnSpeedStreamer(position, velocity);
++    }
++
++    // ÔöÇÔöÇ Eje Z Falso: movimiento rasante tipo roll (ilusion 3D) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++    // Un roll no sube: la sombra se desplaza ligeramente pero el
++    // personaje se mantiene pegado al suelo. fakeZ muy bajo.
++    {
++      static constexpr float DASH_DURATION = 0.45f;
++      float dashProgress = 1.0f - (dashGraceTimer / DASH_DURATION);
++      fakeZ = sinf(dashProgress * PI) * 7.0f; // Solo 7px: rasante, no salto
++    }
+     return;
+   }
+ 
++  // Fuera del dash: bajar fakeZ hacia 0 suavemente
++  if (fakeZ > 0.5f)
++    fakeZ = fakeZ * (1.0f - dt * 12.0f);
++  else
++    fakeZ = 0.0f;
++
+   // =====================================================
+   // MAQUINA DE ESTADOS PRINCIPAL
+   // =====================================================
+@@ -235,13 +283,13 @@ void Ropera::Update() {
+       break;
+ 
+     // Velocidad de movimiento
+-    float spd = 460.0f; // Aumentado (era 395)
++    float spd = 440.0f; // Ajustado a 440 (era 460)
+     if (moveSpeedBuffTimer > 0)
+       spd = 640.0f; // Aumentado (era 590)
+     if (slowTimer > 0)
+       spd *= 0.5f;
+     if (isCharging)
+-      spd *= 0.55f;
++      spd *= 0.20f; // Souls-like Action Commitment (80% slow)
+ 
+     // Movimiento WASD
+     Vector2 move = {0, 0};
+@@ -257,12 +305,30 @@ void Ropera::Update() {
+       move = Vector2Normalize(move);
+       Vector2 np = Vector2Add(position, Vector2Scale(move, spd * dt));
+       position = Arena::GetClampedPos(np, radius);
++      
++      // [NEW] Speed Streamers al correr rapido
++      if (moveSpeedBuffTimer > 0 && GetRandomValue(0,100) < 15) {
++          Graphics::SpawnSpeedStreamer(position, Vector2Scale(move, spd));
++      }
+     }
+ 
+-    // Facing al mouse
+-    Vector2 aim = Vector2Subtract(targetAim, position);
+-    if (Vector2Length(aim) > 0)
+-      facing = Vector2Normalize(aim);
++    // Facing al mouse - Locked outside of NORMAL
++    bool canRotate = (state == RoperaState::NORMAL);
++
++    if (canRotate) {
++      Vector2 aim = Vector2Subtract(targetAim, position);
++      if (Vector2Length(aim) > 0) {
++        facing = Vector2Normalize(aim);
++        
++        // If moving, we can optionally weight the facing towards movement direction
++        // for that "Hades" feel where you look where you run unless aiming.
++        if (Vector2Length(move) > 0) {
++            // Smoothly lerp towards movement direction or just stay on aim
++            // For now, let's keep aim as priority if mouse is used, 
++            // but if no mouse aim is active, snap to move.
++        }
++      }
++    }
+ 
+     // ÔöÇÔöÇ Dash (SPACE) ÔÇô independiente, i-frames reales ÔöÇÔöÇ
+     if (IsKeyPressed(controls.dash) && CanDash()) {
+@@ -270,9 +336,9 @@ void Ropera::Update() {
+       Vector2 bdir =
+           (Vector2Length(move) > 0) ? Vector2Normalize(move) : facing;
+       velocity =
+-          Vector2Scale(bdir, 975.0f); // Reducido un 15% (era 1150)
++          Vector2Scale(bdir, 880.0f); // Reduced further (was 975)
+       state = RoperaState::DASHING;
+-      dashGraceTimer = 0.40f; // Mas i-frames (era 0.28)
++      dashGraceTimer = 0.45f; // Roll duration
+       UseDash();
+       // Spawn initial ghost
+       Graphics::VFXSystem::GetInstance().SpawnGhost(position, {0, 0, (float)radius * 2, (float)radius * 2}, 0.35f, Fade(GetHUDColor(), 0.5f), (facing.x > 0), 1.0f, {radius, radius}, ResourceManager::roperaDash);
+@@ -285,25 +351,66 @@ void Ropera::Update() {
+             0.25f, {0, 220, 180, 255});
+     }
+ 
+-    // ÔöÇÔöÇ Hold click: carga heavy ÔöÇÔöÇ
++    // ÔöÇÔöÇ L├│gica de Ataque (Combo vs Cargado Auto) ÔöÇÔöÇ
+     if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+       holdTimer += dt;
+       isCharging = true;
++
++      // --- Perfect Dodge Reward: Instant Heavy ---
++      if (hasPerfectDodgeBuff && isCharging) {
++          hasPerfectDodgeBuff = false; // Consumir buff
++          Vector2 aim = Vector2Subtract(targetAim, position);
++          if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
++          
++          state = RoperaState::HEAVY_ATTACK;
++          attackPhase = AttackPhase::STARTUP;
++          attackPhaseTimer = 0.05f; // Casi instant├íneo
++          heavyHasHit = false;
++          comboTimer = 0;
++          isCharging = false;
++          holdTimer = 0;
++          
++          velocity = Vector2Scale(facing, 2000.0f); // Impulso fuerte
++          hitFlashTimer = 0.3f;
++      }
++
++      // [NEW] DISPARO AUTOM├üTICO DE CARGADO: Se ejecuta solo al alcanzar el umbral
++      if (holdTimer >= 0.35f && isCharging) {
++        bool canHeavy = true;
++        if (!ultActive) {
++          if (CanDash()) UseDash();
++          else canHeavy = false;
++        } else {
++          if (ultHeavyCharges > 0) ultHeavyCharges--;
++          else canHeavy = false;
++        }
++
++        if (canHeavy) {
++          Vector2 aim = Vector2Subtract(targetAim, position);
++          if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
++          
++          velocity = Vector2Scale(facing, 1800.0f);
++          state = RoperaState::HEAVY_ATTACK;
++          attackPhase = AttackPhase::STARTUP;
++          attackPhaseTimer = 0.10f * aMult;
++          heavyHasHit = false;
++          lungeHitIds.clear();
++          hasLockedTarget = false;
++          
++          // [NEW] INCREMENTAR SECUENCIA CINEM├üTICA
++          ultHeavySeqIndex = (ultHeavySeqIndex % 4) + 1;
++          ultSeqResetTimer = 1.2f; // Tiempo de gracia para el siguiente tajo
++          
++          isCharging = false; 
++          holdTimer = 0;
++        }
++      }
+     }
+ 
+-    // ÔöÇÔöÇ Release click ÔöÇÔöÇ
+-    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON) && isCharging) {
+-      if (holdTimer >= 0.35f) {
+-        // Ataque cargado ÔÇô consume cooldown de dash
+-        if (CanDash())
+-          UseDash();
+-        velocity = Vector2Scale(facing, 1500.0f);
+-        state = RoperaState::HEAVY_ATTACK;
+-        attackPhase = AttackPhase::STARTUP;
+-        attackPhaseTimer = 0.10f * aMult;
+-        heavyHasHit = false;
+-      } else {
+-        // Click rapido: combo
++    // ÔöÇÔöÇ Release click: solo para combo r├ípido ÔöÇÔöÇ
++    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
++      if (isCharging) {
++        // Si llegamos aqu├¡ con isCharging = true, es que soltamos antes de 0.35s
+         state = RoperaState::ATTACKING;
+         hasHit = false;
+         step3BackDone = false;
+@@ -313,6 +420,9 @@ void Ropera::Update() {
+         attackPhase = AttackPhase::STARTUP;
+         attackPhaseTimer = combo[comboStep].startup * aMult;
+         comboTimer = 1.4f;
++
++        Vector2 aim = Vector2Subtract(targetAim, position);
++        if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
+       }
+       holdTimer = 0;
+       isCharging = false;
+@@ -339,13 +449,14 @@ void Ropera::Update() {
+       eBuffActive = true;
+     }
+ 
+-    // ÔöÇÔöÇ Ultimate R: solo si hp < 60% ÔöÇÔöÇ
++    // ÔöÇÔöÇ Ultimate R: MODO GARRAS (Restaurada condici├│n de HP < 60%) ÔöÇÔöÇ
+     if (IsKeyPressed(controls.ultimate) && ultCooldown <= 0 && !ultActive &&
+-        hp / maxHp < 0.60f && energy >= 50.0f) {
++        hp < maxHp * 0.61f && energy >= 50.0f) {
+       energy -= 50.0f;
+       ultActive = true;
+       ultTimer = 8.0f;
+       ultCooldown = ultMaxCooldown;
++      ultHeavyCharges = 4; // Inicializar cargas de cargado en Ult
+       InitSwords();
+     }
+     break;
+@@ -384,9 +495,9 @@ void Ropera::Update() {
+         attackPhaseTimer = combo[comboStep].active * aMult;
+         hitCooldownTimer = 0;
+         attackId++;
+-        // Impulso tactico (Auto-Lunge) para cerrar distancia en los dos primeros hits
++        // Impulso tactico (Auto-Lunge) reducido para no afectar el apuntado
+         if (comboStep < 2) {
+-          velocity = Vector2Add(velocity, Vector2Scale(facing, 180.0f));
++          velocity = Vector2Add(velocity, Vector2Scale(facing, 60.0f));
+         }
+         if (comboStep == 2) {
+           burstSubActive = true;
+@@ -398,8 +509,11 @@ void Ropera::Update() {
+         attackPhaseTimer = combo[comboStep].recovery * aMult;
+         burstSubActive = false;
+         break;
+-      case AttackPhase::RECOVERY:
+-        comboStep = (comboStep + 1) % 3;
++      case AttackPhase::RECOVERY: {
++        // [NEW] COMBO LIMITADO A 2 HITS EN ULTIMATE (Mano Izq / Mano Der)
++        int stepLimit = ultActive ? 2 : 3;
++        comboStep = (comboStep + 1) % stepLimit;
++
+         if (attackBufferTimer > 0.0f) {
+           attackBufferTimer = 0.0f;
+           attackPhase = AttackPhase::STARTUP;
+@@ -409,6 +523,10 @@ void Ropera::Update() {
+           burstHitCount = 0;
+           burstSubActive = false;
+           step3BackDone = false;
++          
++          // Re-orientar al mouse al iniciar nuevo paso del combo
++          Vector2 aim = Vector2Subtract(targetAim, position);
++          if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
+         } else {
+           state = RoperaState::NORMAL;
+           attackPhase = AttackPhase::NONE;
+@@ -418,6 +536,7 @@ void Ropera::Update() {
+           step3BackDone = false;
+         }
+         break;
++      }
+       default:
+         break;
+       }
+@@ -428,9 +547,9 @@ void Ropera::Update() {
+       Vector2 aim2 = Vector2Subtract(targetAim, position);
+       Vector2 bdir =
+           (Vector2Length(aim2) > 0) ? Vector2Normalize(aim2) : facing;
+-      velocity = Vector2Scale(bdir, 975.0f); // Reducido un 15% (era 1100)
++      velocity = Vector2Scale(bdir, 880.0f); // Reduced further (was 975)
+       state = RoperaState::DASHING;
+-      dashGraceTimer = 0.25f; // Mas i-frames (era 0.15)
++      dashGraceTimer = 0.45f; // Roll duration
+       UseDash();
+       attackPhase = AttackPhase::NONE;
+       // Spawn ghost for dash cancel
+@@ -445,33 +564,111 @@ void Ropera::Update() {
+     break;
+   }
+ 
+-  // ÔöÇÔöÇÔöÇ HEAVY_ATTACK (Super Estocada) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++  // ÔöÇÔöÇÔöÇ HEAVY_ATTACK (Super Estocada / Piercing Lunge) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+   case RoperaState::HEAVY_ATTACK: {
+     attackPhaseTimer -= dt;
+ 
+-    // Propulsion frontal durante startup
++    // Propulsion durante STARTUP y desplazamiento durante ACTIVE
+     if (attackPhase == AttackPhase::STARTUP) {
+       Vector2 np = Vector2Add(position, Vector2Scale(velocity, dt));
+       position = Arena::GetClampedPos(np, radius);
+-      velocity = Vector2Scale(velocity, 0.78f);
++      velocity = Vector2Scale(velocity, 0.85f);
++
++      // [NEW] Particulas de concentracion durante el startup
++      if (GetRandomValue(0, 100) < 40) {
++          float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
++          float dist = 80.0f * (attackPhaseTimer / 0.10f); // Se encogen hacia el centro
++          Vector2 pPos = { position.x + cosf(ang) * dist, position.y - 20 + sinf(ang) * dist };
++          Vector2 pVel = Vector2Scale(Vector2Normalize(Vector2Subtract({position.x, position.y - 20}, pPos)), 200.0f);
++          Graphics::VFXSystem::GetInstance().SpawnParticleEx(pPos, pVel, 0.15f, {255, 200, 100, 255}, 2.5f, Graphics::RenderType::RHOMB, BLEND_ADDITIVE);
++      }
++
++    } else if (attackPhase == AttackPhase::ATTACK_ACTIVE) {
++      // EMBESTIDA: Desplazamiento
++      float activeSpd = 120.0f; // Muy lento para normal
++      if (ultActive) {
++          activeSpd = 1600.0f; // [MOD] Gran desplazamiento en Garras para notar la forma del trazo
++      }
++      Vector2 np = Vector2Add(position, Vector2Scale(facing, activeSpd * dt));
++      position = Arena::GetClampedPos(np, radius);
++      
++      // [ENHANCED] VFX Lunge Ghost - Mas frecuente para fluidez
++      static float lungeGhost = 0;
++      lungeGhost += dt;
++      if (lungeGhost > 0.025f) { // Frecuencia duplicada
++          lungeGhost = 0;
++          Color gCol = ultActive ? Color{255, 180, 50, 255} : Color{100, 255, 220, 255};
++          Graphics::VFXSystem::GetInstance().SpawnGhost(position, {0, 0, (float)radius * 2, (float)radius * 2}, 0.22f, Fade(gCol, 0.4f), (facing.x > 0), 1.0f, {radius, radius}, ResourceManager::roperaDash);
++      }
+     }
+ 
+     if (attackPhaseTimer <= 0) {
+       switch (attackPhase) {
+       case AttackPhase::STARTUP:
+         attackPhase = AttackPhase::ATTACK_ACTIVE;
+-        attackPhaseTimer = 0.18f;
+-        velocity = {0, 0};
++        attackPhaseTimer = 0.14f; // Mas corto (antes 0.22) para ser mas rapido
++        lungeHitIds.clear();
+         attackId++;
++
++        // [NEW] SONIC BOOM: Shockwave al iniciar el desplazamiento activo
++        {
++            Color waveCol = ultActive ? Color{255, 140, 0, 255} : Color{0, 255, 220, 255};
++            for (int i = 0; i < 8; i++) {
++                float a = (float)i * (45.0f * DEG2RAD);
++                Vector2 v = { cosf(a) * 400.0f, sinf(a) * 400.0f };
++                Graphics::VFXSystem::GetInstance().SpawnParticleEx(position, v, 0.2f, waveCol, 6.0f, Graphics::RenderType::RHOMB, BLEND_ADDITIVE);
++            }
++            // Removed local hit flash as per user request
++        }
+         break;
+       case AttackPhase::ATTACK_ACTIVE:
+         attackPhase = AttackPhase::RECOVERY;
+-        attackPhaseTimer = 0.40f;
++        // Recovery con micro-pausa cinem├ítica en Ult (hitstop entre tajos)
++        attackPhaseTimer = (ultActive ? 0.22f : 0.35f); 
+         break;
+       case AttackPhase::RECOVERY:
+-        state = RoperaState::NORMAL;
+-        attackPhase = AttackPhase::NONE;
+-        heavyHasHit = false;
++        // [MOD] SECUENCIA AUTOM├üTICA EN ULTIMATE
++        // Se lanza la r├ífaga completa de 4 sin necesidad de mantener el click
++        if (ultActive && ultHeavyCharges > 0) {
++            ultHeavyCharges--;
++            state = RoperaState::HEAVY_ATTACK;
++            attackPhase = AttackPhase::STARTUP;
++            attackPhaseTimer = 0.08f; 
++            lungeHitIds.clear();
++            attackId++;
++            
++            // Re-ajustar direccion al BOSS (posici├│n actual, no la vieja)
++            // lockedHeavyTargetPos se actualiza cada hit en CheckCollisions
++            if (hasLockedTarget) {
++                Vector2 diff = Vector2Subtract(lockedHeavyTargetPos, position);
++                float distToBoss = Vector2Length(diff);
++                if (distToBoss > 0) facing = Vector2Normalize(diff);
++                
++                // Propulsi├│n proporcional a la distancia (no overshooting)
++                float lungeSpeed = fminf(distToBoss * 8.0f, 1800.0f);
++                velocity = Vector2Scale(facing, lungeSpeed);
++            } else {
++                Vector2 aim = Vector2Subtract(targetAim, position);
++                if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
++                velocity = Vector2Scale(facing, 1600.0f);
++            }
++            screenShake = fmaxf(screenShake, 1.2f);
++            
++            for (int k = 0; k < 6; k++) {
++                Graphics::VFXSystem::GetInstance().SpawnParticle(
++                    position,
++                    Vector2Add(Vector2Scale(facing, 300.0f), {(float)GetRandomValue(-150, 150), (float)GetRandomValue(-150, 150)}),
++                    0.20f, Fade(WHITE, 0.6f));
++            }
++        } else {
++            state = RoperaState::NORMAL;
++            attackPhase = AttackPhase::NONE;
++            heavyHasHit = false;
++            lungeHitIds.clear();
++            hasLockedTarget = false;
++            // Reset de secuencia si terminamos la r├ífaga
++            if (ultActive) ultHeavySeqIndex = 0; 
++        }
+         break;
+       default:
+         break;
+@@ -532,7 +729,15 @@ void Ropera::Update() {
+   frameTimer += dt;
+ 
+   // ÔöÇÔöÇ Combo timeout ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+-  if (state != RoperaState::ATTACKING && comboTimer > 0) {
++  bool isInCombat = (state == RoperaState::ATTACKING);
++  if (ultActive && state == RoperaState::HEAVY_ATTACK) isInCombat = true;
++
++  if (ultSeqResetTimer > 0) {
++    ultSeqResetTimer -= dt;
++    if (ultSeqResetTimer <= 0) ultHeavySeqIndex = 0;
++  }
++
++  if (!isInCombat && comboTimer > 0) {
+     comboTimer -= dt;
+     if (comboTimer <= 0)
+       comboStep = 0;
+@@ -573,6 +778,9 @@ void Ropera::Reset(Vector2 pos) {
+   step3BackDone = false;
+   burstHitCount = 0;
+   burstSubActive = false;
++  ultHeavyCharges = 0;
++  lungeHitIds.clear();
++  hasLockedTarget = false;
+   for (int i = 0; i < 3; i++) {
+     swords[i].active = false;
+     swords[i].swordState = SwordState::BEHIND;
+@@ -585,7 +793,20 @@ void Ropera::Reset(Vector2 pos) {
+ // =====================================================
+ void Ropera::HandleSkills(Boss &boss) {
+   float dt = GetFrameTime() * g_timeScale;
++  UpdateDash(dt);
+   UpdateSwords(dt, boss);
++    
++  // [NEW] WIND DANCER AURA: Part├¡culas de viento constantes en Ultimate
++  if (ultActive && GetRandomValue(0, 100) < 30) {
++      float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
++      float dist = (float)GetRandomValue(10, 50);
++      Vector2 pPos = { position.x + cosf(ang) * dist, position.y - 20 + sinf(ang) * dist };
++      Graphics::VFXSystem::GetInstance().SpawnFull(
++          pPos, { (float)GetRandomValue(-50, 50), -120.0f }, 0.5f,
++          WHITE, {200, 255, 255, 0}, (float)GetRandomValue(4, 8),
++          Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.94f, (float)GetRandomValue(0, 360), 10.0f
++      );
++  }
+ }
+ 
+ // =====================================================
+@@ -612,19 +833,25 @@ void Ropera::CheckCollisions(Boss &boss) {
+ 
+     dmg *= rpg.DamageMultiplierPhysical();
+     lastDamageType = DamageType::PHYSICAL;
+-    boss.hp -= dmg;
++    boss.TakeDamage(dmg, comboStep == 2 ? 8.0f : 4.0f, {0, 0});
+     energy = fminf(maxEnergy, energy + 5.0f);
+ 
+     if (eBuffActive)
+       hp = fminf(maxHp, hp + dmg * eLifestealFrac);
+ 
+-    // Hitstop y empuje (reducido 50%)
++    // Hitstop y empuje (reducido significativamente para estabilidad)
+     hitstopTimer = 0.08f;
+-    velocity = Vector2Add(velocity, Vector2Scale(facing, 280.0f));
++    velocity = Vector2Add(velocity, Vector2Scale(facing, 120.0f));
+ 
+     // Solo el ultimo ataque de la secuencia empujaba al boss (desactivado)
+     if (comboStep == 2) {
+       screenShake = fmaxf(screenShake, 1.8f); // Reducido (era 2.5) y usando fmaxf
++      // Removed SpawnImpactFrame
++    }
++
++    // [NEW] Sangre Estilizada en Modo Garras
++    if (ultActive) {
++        Graphics::SpawnStyledBlood(boss.position, facing);
+     }
+ 
+     // Disparar espadas escalonadas
+@@ -640,7 +867,7 @@ void Ropera::CheckCollisions(Boss &boss) {
+       
+     dmg *= rpg.DamageMultiplierPhysical();
+     lastDamageType = DamageType::PHYSICAL;
+-    boss.hp -= dmg;
++    boss.TakeDamage(dmg, 80.0f, {0, 0});
+     energy = fminf(maxEnergy, energy + 10.0f);
+     if (eBuffActive)
+       hp = fminf(maxHp, hp + dmg * eLifestealFrac);
+@@ -650,8 +877,25 @@ void Ropera::CheckCollisions(Boss &boss) {
+     velocity =
+         Vector2Add(velocity, Vector2Scale(facing, 385.0f)); // reducido 50%
+ 
+-    if (ultActive)
++    if (ultActive) {
+       TriggerSwords(boss.position);
++      // Auto-aim: ACTUALIZAR posici├│n del boss en CADA hit para no fallar
++      if (ultActive) {
++          hasLockedTarget = true;
++          lockedHeavyTargetPos = boss.position;
++          Graphics::SpawnStyledBlood(boss.position, facing); // Sangre en cada tajo de la definitiva
++      }
++    }
++
++    // [NEW] IMPACT NOVA & VFX
++    Color impactCol = ultActive ? Color{255, 140, 0, 255} : Color{0, 255, 200, 255};
++    Graphics::SpawnImpactBurst(boss.position, facing, WHITE, impactCol, 12, 8);
++    Graphics::SpawnSonicBoom(boss.position, 280.0f); // [NEW] Onda de choque s├│nica
++    screenShake = fmaxf(screenShake, 3.5f); // Sacudida potente
++
++    // Impact effects (Particles kept, full-screen flashes removed as per user request)
++    // AnimeVFX::PostProcessPipeline::Get().SpawnImpactFrame(2, 0.08f); 
++    // AnimeVFX::PostProcessPipeline::Get().SpawnGlitch(0.12f);
+   }
+ 
+   // ÔöÇÔöÇÔöÇ Q (dos tajos) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+@@ -659,7 +903,7 @@ void Ropera::CheckCollisions(Boss &boss) {
+     if (CheckQCollision(boss, qSlashIndex)) {
+       float dmg = 24.0f * rpg.DamageMultiplierPhysical(); // Da├▒o original revertido
+       lastDamageType = DamageType::PHYSICAL;
+-      boss.hp -= dmg;
++      boss.TakeDamage(dmg, 20.0f, {0, 0});
+       energy = fminf(maxEnergy, energy + 8.0f);
+       qHasHit = true;
+       if (eBuffActive)
+@@ -688,12 +932,12 @@ bool Ropera::CheckComboCollision(Boss &boss) {
+ 
+   float attackMult = (eBuffActive ? 0.58f : (ultActive ? 0.50f : 1.0f));
+   float activeTotal = combo[comboStep].active * attackMult;
+-  float progMult = ultActive ? 1.4f : 2.8f; // Mas snappier en normal (era 2.2)
++  float progMult = 4.5f; // Mas snappier (User request)
+   // Empezar con un 20% de progreso para cubrir el area inmediata al personaje
+   float progress = 0.20f + CombatUtils::GetProgress(attackPhaseTimer, activeTotal) * progMult;
+   if (progress > 1.0f) progress = 1.0f;
+ 
+-  float maxRange = combo[comboStep].range * (ultActive ? 0.92f : 1.0f);
++  float maxRange = combo[comboStep].range * (ultActive ? 0.75f : 1.0f);
+   float currentRange = maxRange * progress; // Crece hacia adelante
+   
+   // Usar los angulos definidos en el combo siempre, 16.0 era demasiado estrecho
+@@ -745,20 +989,27 @@ bool Ropera::CheckHeavyCollision(Boss &boss) {
+   if (state != RoperaState::HEAVY_ATTACK ||
+       attackPhase != AttackPhase::ATTACK_ACTIVE)
+     return false;
+-  if (heavyHasHit)
+-    return false;
+ 
+-  float activeTotal = 0.18f;
+-  float progMult = ultActive ? 1.4f : 2.2f; // Ropera base hitboxes faster, ult same (was 1.4f)
++  // Evitar doble golpe al mismo enemigo en una embestida perforante
++  for (int id : lungeHitIds) {
++      // Asumimos que boss.id es un identificador unico. Si no existe, usamos punteros.
++      // Dado que CheckCollisions se llama con la instancia, comparamos la direccion.
++      if ((size_t)&boss == (size_t)id) return false;
++  }
++
++  // Progreso del tajo dentro de la embestida
++  float activeTotal = 0.14f; // Sincronizado con Update
++  float progMult = 6.0f; // Mucho mas rapido
+   float progress = CombatUtils::GetProgress(attackPhaseTimer, activeTotal) * progMult;
+   if (progress > 1.0f) progress = 1.0f;
+-  float maxRange = 265.0f; // Adjusted reach (+12% from 236)
+   
+-  // Usar angulo de combo 0 para modo normal o el de garras en ult
+-  float angleWidth = ultActive ? 72.0f : combo[0].angleWidth;
++  float ultScale = ultActive ? 0.75f : 1.0f;
++  float maxRange = 210.0f * ultScale;
++  
++  float angleWidth = ultActive ? 35.0f : 12.0f; // M├ís ancha en Garras para no fallar
+ 
+   if (CombatUtils::CheckProgressiveThrust(position, facing, boss.position, boss.radius, maxRange, angleWidth/2.0f, progress)) {
+-    heavyHasHit = true;
++    lungeHitIds.push_back((int)(size_t)&boss);
+     return true;
+   }
+   return false;
+@@ -849,313 +1100,162 @@ void Ropera::Draw() {
+                      Fade(ac, ap * (ultActive ? 0.9f : 0.5f)), Fade(ac, 0));
+ 
+   // ÔöÇÔöÇ Cuerpo (Sprite) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+-  {
+-    Texture2D activeTex = ResourceManager::roperaIdle;
+-
+-    // 1. Determinar Textura Activa
+-    if (hp <= 0) {
+-      activeTex = ResourceManager::roperaDeath;
+-    } else if (hitFlashTimer > 0) {
+-      activeTex = ResourceManager::roperaHit;
+-    } else if (state == RoperaState::DASHING) {
+-      activeTex = ResourceManager::roperaDash;
+-    } else if (state == RoperaState::CASTING_Q) {
+-      activeTex =
+-          ResourceManager::roperaAttack1; // El cuerpo usa pose de ataque1
+-    } else if (state == RoperaState::HEAVY_ATTACK) {
+-      activeTex = ResourceManager::roperaHeavy;
+-    } else if (state == RoperaState::ATTACKING) {
+-      if (comboStep == 0 || comboStep == 1)
+-        activeTex = ResourceManager::roperaAttack1;
+-      else
+-        activeTex = ResourceManager::roperaAttack3;
+-    } else {
+-      // NORMAL state
+-      if (Vector2Length(velocity) > 20.0f) {
+-        activeTex = ResourceManager::roperaRun;
+-      } else {
+-        activeTex = ResourceManager::roperaIdle;
+-      }
+-    }
+-
+-    // 2. Determinar numero de frames de forma din├ímica
+-    int numFrames = 1;
+-    Image *animSource = nullptr;
+-
+-    if (state == RoperaState::CASTING_Q) {
+-      numFrames = ResourceManager::roperaAttack1Frames;
+-      animSource = &ResourceManager::roperaAttack1Im;
+-    } else if (hp <= 0) {
+-      // Death is still PNG
+-      if (activeTex.height > 0)
+-        numFrames = activeTex.width / activeTex.height;
+-    } else if (hitFlashTimer > 0) {
+-      // Hit is still PNG
+-      if (activeTex.height > 0)
+-        numFrames = activeTex.width / activeTex.height;
+-    } else if (state == RoperaState::DASHING) {
+-      numFrames = ResourceManager::roperaDashFrames;
+-      animSource = &ResourceManager::roperaDashIm;
+-    } else if (state == RoperaState::HEAVY_ATTACK) {
+-      numFrames = ResourceManager::roperaHeavyFrames;
+-      animSource = &ResourceManager::roperaHeavyIm;
+-    } else if (state == RoperaState::ATTACKING) {
+-      if (comboStep == 0 || comboStep == 1) {
+-        numFrames = ResourceManager::roperaAttack1Frames;
+-        animSource = &ResourceManager::roperaAttack1Im;
+-      } else {
+-        numFrames = ResourceManager::roperaAttack3Frames;
+-        animSource = &ResourceManager::roperaAttack3Im;
+-      }
+-    } else {
+-      // NORMAL
+-      if (Vector2Length(velocity) > 20.0f) {
+-        numFrames = ResourceManager::roperaRunFrames;
+-        animSource = &ResourceManager::roperaRunIm;
+-      } else {
+-        numFrames = ResourceManager::roperaIdleFrames;
+-        animSource = &ResourceManager::roperaIdleIm;
+-      }
+-    }
+-
+-    if (numFrames <= 0)
+-      numFrames = 1;
+-
+-    // 3. Calcular qu├® frame mostrar
+-    int currentFrame = 0;
+-
+-    if (state == RoperaState::NORMAL && animSource != nullptr) {
+-      // Loop de animacion por tiempo para Idle/Run
+-      float animSpeed =
+-          (activeTex.id == ResourceManager::roperaRun.id) ? 0.08f : 0.12f;
+-      currentFrame = (int)(t / animSpeed) % numFrames;
++    Texture2D* currentSheet = &ResourceManager::ropera8Idle;
++    int totalFrames = 1; // Default fallback
++
++    if (state == RoperaState::ATTACKING || state == RoperaState::HEAVY_ATTACK || state == RoperaState::CASTING_Q) {
++        currentSheet = &ResourceManager::ropera8Attack;
++        totalFrames = 12; // Estimado para ataques (ajustar segun asset)
++    } else if (Vector2Length(velocity) > 10.0f) {
++        currentSheet = &ResourceManager::ropera8Run;
++        totalFrames = 8; // Estimado para correr
+     } else {
+-      // Animacion basada en progreso del ataque/estado
+-      float progress = 0.0f;
+-
+-      if (state == RoperaState::ATTACKING) {
+-        float aMult = (eBuffActive ? 0.58f : (ultActive ? 0.50f : 1.0f));
+-        float st = combo[comboStep].startup * aMult;
+-        float ac = combo[comboStep].active * aMult;
+-        float rc = combo[comboStep].recovery * aMult;
+-        float tot = st + ac + rc;
+-
+-        float elapsed = 0.0f;
+-        if (attackPhase == AttackPhase::STARTUP)
+-          elapsed = st - attackPhaseTimer;
+-        else if (attackPhase == AttackPhase::ATTACK_ACTIVE)
+-          elapsed = st + (ac - attackPhaseTimer);
+-        else if (attackPhase == AttackPhase::RECOVERY)
+-          elapsed = st + ac + (rc - attackPhaseTimer);
+-
+-        progress = elapsed / tot;
+-      } else if (state == RoperaState::HEAVY_ATTACK) {
+-        float tot = 0.10f + 0.18f + 0.40f;
+-        float elapsed = 0.0f;
+-        if (attackPhase == AttackPhase::STARTUP)
+-          elapsed = 0.10f - attackPhaseTimer;
+-        else if (attackPhase == AttackPhase::ATTACK_ACTIVE)
+-          elapsed = 0.10f + (0.18f - attackPhaseTimer);
+-        else if (attackPhase == AttackPhase::RECOVERY)
+-          elapsed = 0.10f + 0.18f + (0.40f - attackPhaseTimer);
+-        progress = elapsed / tot;
+-      } else if (state == RoperaState::DASHING) {
+-        progress = 1.0f - (dashGraceTimer / 0.15f);
+-      }
+-      // Eliminamos la l├│gica de avance del GIF de tajo del cuerpo
+-      // ya que ahora se maneja como un efecto overlay independiente en la
+-      // secci├│n Visual Q.
+-
+-      progress = std::clamp(progress, 0.0f, 0.99f);
+-      currentFrame = (int)(progress * numFrames);
+-    }
+-
+-    // --- ACTUALIZACION TEXTURA DESDE GIF ---
+-    if (animSource != nullptr && numFrames > 0) {
+-      unsigned int nextFrameDataOffset =
+-          animSource->width * animSource->height * 4 * currentFrame;
+-      UpdateTexture(activeTex,
+-                    ((unsigned char *)animSource->data) + nextFrameDataOffset);
+-      currentFrame = 0;
+-      numFrames = 1;
++        currentSheet = &ResourceManager::ropera8Idle;
++        totalFrames = 6; // Estimado para idle
+     }
+ 
+-    // 4. Dibujar textura
+-    if (activeTex.id != 0) {
+-      float frameW = (float)activeTex.width / numFrames;
+-      float frameH = (float)activeTex.height;
+-
+-      // Voltear horizontalmente segun el facing (asumiendo que miran a la
+-      // derecha por defecto)
+-      float flipMult = (facing.x < 0) ? -1.0f : 1.0f;
+-
+-      Rectangle src = {(float)currentFrame * frameW, 0.0f, frameW * flipMult,
+-                       frameH};
+-
+-      // Origen centrado en la base
+-      float scale = 1.5f; // Ajusta esto segun el tamano deseado de tu personaje
+-      Rectangle dest = {position.x, position.y, frameW * scale, frameH * scale};
+-
+-      // Sombra en los pies (para referencia de suelo)
+-      DrawEllipse((int)position.x, (int)position.y, 35, 12, Fade(BLACK, 0.4f));
++    if (currentSheet->id != 0) {
++        int dirIdx = GetDirectionIndex(facing);
++        float animSpeed = 0.12f;
++        int frame = (int)(t / animSpeed) % totalFrames;
+ 
+-      // Ajuste agresivo del pivot: bajamos el origen mas al centro de la imagen
+-      // para que los pies (que suelen estar mas arriba en frames de Ropera)
+-      // toquen el suelo.
+-      Vector2 orig = {(frameW * scale) / 2.0f, (frameH * scale) * 0.55f};
++        float frameW = (float)currentSheet->width / totalFrames;
++        float frameH = (float)currentSheet->height / 8; // 8 filas de direcciones
+ 
+-      Color tint = WHITE;
+-      if (hitFlashTimer > 0)
+-        tint = {255, 100, 100, 255};
+-      else if (ultActive)
+-        tint = {255, 220, 100, 255};
+-      else if (eBuffActive)
+-        tint = {180, 255, 200, 255};
+-
+-      DrawTexturePro(activeTex, src, dest, orig, 0.0f, tint);
++        Rectangle src = { (float)frame * frameW, (float)dirIdx * frameH, frameW, frameH };
++        Rectangle dest = { position.x, position.y - 20, radius * 5.0f, radius * 5.0f };
++        Vector2 origin = { dest.width / 2.0f, dest.height / 1.2f };
+ 
++        Color tint = (hitFlashTimer > 0) ? WHITE : ac;
++        DrawTexturePro(*currentSheet, src, dest, origin, 0.0f, tint);
+     } else {
+-      // Fallback primitivo si falla carga
+-      Color tint = WHITE;
+-      if (hitFlashTimer > 0)
+-        tint = {255, 100, 100, 255};
+-      DrawCircleV({position.x, position.y - 20}, radius, tint);
++        // ÔöÇÔöÇ Cuerpo (Primitive Fallback) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++        Vector2 snapped = Directions::GetSnappedVector(facing);
++        
++        // Anillo de base (360)
++        DrawCircleLines((int)position.x, (int)position.y - 20, radius + 5, Fade(ac, 0.3f));
++        
++        // Flecha de direcci├│n (Snapped to 8)
++        Vector2 pointerPos = Vector2Add({position.x, position.y - 20}, Vector2Scale(snapped, radius + 12.0f));
++        DrawCircleV(pointerPos, 4.0f, WHITE); 
++        
++        Color tint = (hitFlashTimer > 0) ? WHITE : ac;
++        DrawCircleV({position.x, position.y - 20}, radius, tint);
++        DrawCircleLines((int)position.x, (int)position.y - 20, radius, GREEN);
+     }
+-  }
+ 
+-  // ÔöÇÔöÇ Visual Combo Progresivo ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+-  if (state == RoperaState::ATTACKING) {
+-    int step = comboStep;
+-    float aMult = eBuffActive ? 0.58f : (ultActive ? 0.50f : 1.0f);
+-    float activeTotal = combo[step].active * aMult;
+-    float progMult = ultActive ? 1.4f : 2.2f; // Visual match for faster base hitboxes
+-    float progress = CombatUtils::GetProgress(attackPhaseTimer, activeTotal) * progMult;
+-    if (progress > 1.0f) progress = 1.0f;
+-
+-    float maxRange = combo[step].range * (ultActive ? 0.92f : 1.0f); // Fixed reach to match logic (was 0.68)
+-    float drawRange = maxRange;
+-    if (attackPhase == AttackPhase::ATTACK_ACTIVE) {
+-      drawRange = maxRange * progress;
+-    } else if (attackPhase == AttackPhase::STARTUP) {
+-      drawRange = maxRange * 0.3f; // preview corto
++    // ÔöÇÔöÇ HITBOX VISUALIZER (Progresivo) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++    if (g_showHitboxes) {
++        float attackMult = (eBuffActive ? 0.58f : (ultActive ? 0.50f : 1.0f));
++        
++        if (state == RoperaState::ATTACKING && attackPhase == AttackPhase::ATTACK_ACTIVE) {
++            float activeTotal = combo[comboStep].active * attackMult;
++            float progress = 0.20f + CombatUtils::GetProgress(attackPhaseTimer, activeTotal) * 4.5f;
++            if (progress > 1.0f) progress = 1.0f;
++
++            float maxRange = combo[comboStep].range * (ultActive ? 0.75f : 1.0f);
++            float currentRange = maxRange * progress;
++            float facingAngle = atan2f(facing.y * 2.0f, facing.x) * RAD2DEG;
++            float angleWidth = combo[comboStep].angleWidth;
++            float halfAngle = angleWidth / 2.0f;
++
++            rlPushMatrix();
++            rlTranslatef(position.x, position.y - 20, 0);
++            rlScalef(1.0f, 0.5f, 1.0f);
++
++            if (comboStep == 0) {
++                // Estocada: Mostrar el alcance creciendo
++                DrawCircleSectorLines({0,0}, currentRange, facingAngle - halfAngle, facingAngle + halfAngle, 16, YELLOW);
++                DrawCircleSector({0,0}, currentRange, facingAngle - halfAngle, facingAngle + halfAngle, 16, Fade(YELLOW, 0.15f));
++            } else if (comboStep == 1) {
++                // Tajo: Mostrar el barrido progresivo
++                float coveredDeg = angleWidth * progress;
++                float startA = facingAngle - halfAngle;
++                DrawCircleSectorLines({0,0}, maxRange, startA, startA + coveredDeg, 24, YELLOW);
++                DrawCircleSector({0,0}, maxRange, startA, startA + coveredDeg, 24, Fade(YELLOW, 0.15f));
++            } else if (comboStep == 2) {
++                // R├ífaga: C├¡rculo de impacto instant├íneo en el rango actual
++                DrawCircleLines(0, 0, currentRange, YELLOW);
++            }
++            rlPopMatrix();
++
++        } else if (state == RoperaState::CASTING_Q && qSlashActiveTimer > 0) {
++            float progress = CombatUtils::GetProgress(qSlashActiveTimer, 0.18f * (eBuffActive ? 0.58f : 1.0f)) * 2.2f;
++            if (progress > 1.0f) progress = 1.0f;
++
++            float offsetDeg = (qSlashIndex == 0) ? -45.0f : 45.0f;
++            float sweepDir = (qSlashIndex == 0) ? 1.0f : -1.0f;
++            float facingAngle = atan2f(facing.y * 2.0f, facing.x) * RAD2DEG;
++            float startA = facingAngle + offsetDeg;
++            float coveredDeg = 90.0f * progress;
++
++            rlPushMatrix();
++            rlTranslatef(position.x, position.y - 20, 0);
++            rlScalef(1.0f, 0.5f, 1.0f);
++            
++            float secMin = fminf(startA, startA + sweepDir * coveredDeg);
++            float secMax = fmaxf(startA, startA + sweepDir * coveredDeg);
++
++            DrawCircleSectorLines({0,0}, 155.0f, secMin, secMax, 24, SKYBLUE);
++            DrawCircleSector({0,0}, 155.0f, secMin, secMax, 24, Fade(SKYBLUE, 0.2f));
++            rlPopMatrix();
++
++        } else if (state == RoperaState::HEAVY_ATTACK && attackPhase == AttackPhase::ATTACK_ACTIVE) {
++            float progress = CombatUtils::GetProgress(attackPhaseTimer, 0.14f) * 6.0f;
++            if (progress > 1.0f) progress = 1.0f;
++
++            float ultScale = ultActive ? 0.75f : 1.0f;
++            float maxRange = 210.0f * ultScale;
++            float currentRange = maxRange * progress;
++            float facingAngle = atan2f(facing.y * 2.0f, facing.x) * RAD2DEG;
++            float angleWidth = ultActive ? 35.0f : 12.0f;
++
++            rlPushMatrix();
++            rlTranslatef(position.x, position.y - 20, 0);
++            rlScalef(1.0f, 0.5f, 1.0f);
++            DrawCircleSectorLines({0,0}, currentRange, facingAngle - angleWidth/2.0f, facingAngle + angleWidth/2.0f, 16, RED);
++            DrawCircleSector({0,0}, currentRange, facingAngle - angleWidth/2.0f, facingAngle + angleWidth/2.0f, 16, Fade(RED, 0.2f));
++            rlPopMatrix();
++        }
+     }
+ 
+-    float angW = ultActive ? combo[step].angleWidth : 16.0f; // Fina como estocada en normal
+-    float ha = angW / 2.0f;
+-    float sa = atan2f(facing.y * 2.0f, facing.x) * RAD2DEG - ha;
++  // ÔöÇÔöÇ Visual Q (Simplified) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++  if (qActive && state == RoperaState::CASTING_Q && qSlashActiveTimer > 0) {
++    float off = (qSlashIndex == 0) ? -28.0f : 28.0f;
++    float ang = atan2f(facing.y, facing.x) * RAD2DEG + off;
+     
+-    float alpha = (attackPhase == AttackPhase::STARTUP)    ? 0.25f
+-                  : (attackPhase == AttackPhase::RECOVERY) ? 0.15f
+-                                                           : 0.85f;
+-
+-    Color sc = ultActive ? Color{255, 160, 0, 255} : Color{0, 255, 200, 255};
+     rlPushMatrix();
+-    rlTranslatef(position.x, position.y, 0);
+-    rlScalef(1.0f, 0.5f, 1.0f);
+-    
+-    DrawCircleSector({0, 0}, drawRange, sa, sa + angW, 24, Fade(sc, alpha));
+-    
+-    if (attackPhase == AttackPhase::ATTACK_ACTIVE) {
+-      DrawCircleSectorLines({0, 0}, drawRange, sa, sa + angW, 24, WHITE);
+-      // Punta del estoque brillante
+-      float midAng = (sa + ha) * DEG2RAD;
+-      DrawCircleV({cosf(midAng) * drawRange, sinf(midAng) * drawRange}, 5.0f, WHITE);
+-    }
++    rlTranslatef(position.x, position.y - 20, 0);
++    rlRotatef(ang, 0, 0, 1);
++    DrawRectangle(-40, -5, 80, 10, Fade(WHITE, 0.6f));
+     rlPopMatrix();
+   }
+ 
+-  // ÔöÇÔöÇ Visual Heavy Progresivo ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+-  if (state == RoperaState::HEAVY_ATTACK) {
+-    float activeTotal = 0.18f;
+-    float progMult = ultActive ? 1.4f : 2.2f; // Visual match for faster base hitboxes
+-    float progress = CombatUtils::GetProgress(attackPhaseTimer, activeTotal) * progMult;
+-    if (progress > 1.0f) progress = 1.0f;
+-    
+-    float maxRange = 265.0f; // Fixed reach to match logic (was 236)
+-    float drawRange = maxRange;
+-    if (attackPhase == AttackPhase::ATTACK_ACTIVE) {
+-      drawRange = maxRange * progress;
+-    } else if (attackPhase == AttackPhase::STARTUP) {
+-      drawRange = maxRange * 0.3f;
+-    }
+-
+-    float angW = ultActive ? 72.0f : 16.0f;
+-    float ha = angW / 2.0f;
+-    float sa = atan2f(facing.y * 2.0f, facing.x) * RAD2DEG - ha;
+-    
+-    float alp = (attackPhase == AttackPhase::ATTACK_ACTIVE) ? 0.90f : 0.25f;
+-    Color sc = ultActive ? Color{255, 160, 0, 255} : Color{0, 255, 200, 255};
+-    
+-    rlPushMatrix();
+-    rlTranslatef(position.x, position.y, 0);
+-    rlScalef(1.0f, 0.5f, 1.0f);
+-    
+-    DrawCircleSector({0, 0}, drawRange, sa, sa + angW, 24, Fade(sc, alp));
++  // ÔöÇÔöÇ Visual Carga ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++  if (isCharging && holdTimer > 0) {
++    float cp = fminf(holdTimer / 0.35f, 1.0f);
++    DrawCircleGradient((int)position.x, (int)position.y - 20, radius * 2.0f,
++                        Fade(ac, cp * 0.35f), Fade(ac, 0));
+     
+-    if (attackPhase == AttackPhase::ATTACK_ACTIVE) {
+-      DrawCircleSectorLines({0, 0}, drawRange, sa, sa + angW, 24, WHITE);
+-      DrawCircleSectorLines({0, 0}, drawRange + 8.0f, sa - 2.0f, sa + angW + 2.0f, 24, Fade(WHITE, 0.3f));
+-      float midAng = (sa + ha) * DEG2RAD;
+-      DrawCircleV({cosf(midAng) * drawRange, sinf(midAng) * drawRange}, 8.0f, WHITE);
++    // --- VFX: Perfect Dodge Glow ---
++    if (hasPerfectDodgeBuff) {
++        float pulse = 0.5f + 0.5f * sinf((float)g_gameTime * 15.0f);
++        DrawCircleGradient((int)position.x, (int)position.y - 20, radius * 3.5f,
++                            Fade(GOLD, 0.4f * pulse), Fade(GOLD, 0));
++        DrawCircleLinesV({position.x, position.y - 20}, radius + 6.0f + 6.0f * pulse, Fade(GOLD, 0.8f));
+     }
+-    rlPopMatrix();
+-  }
+-
+-  // ÔöÇÔöÇ Visual Q (GIF) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+-  if (qActive && state == RoperaState::CASTING_Q && qSlashActiveTimer > 0) {
+-    float off = (qSlashIndex == 0) ? -28.0f : 28.0f;
+-    float ang = atan2f(facing.y, facing.x) * RAD2DEG + off;
+ 
+-    // Calcular progreso para el GIF del tajo
+-    float progress = 0;
+-    if (qSlashIndex == 0)
+-      progress = 1.0f - (qSlashActiveTimer / 0.18f) * 0.5f;
+-    else
+-      progress = 0.5f + (1.0f - (qSlashActiveTimer / 0.18f)) * 0.5f;
+-
+-    // Actualizar textura del GIF
+-    int totalFrames = ResourceManager::roperaTajoFrames;
+-    if (totalFrames > 0) {
+-      int frame = (int)(progress * totalFrames) % totalFrames;
+-      unsigned int frameSize = ResourceManager::roperaTajoDobleIm.width *
+-                               ResourceManager::roperaTajoDobleIm.height * 4;
+-      UpdateTexture(ResourceManager::roperaTajoDoble,
+-                    ((unsigned char *)ResourceManager::roperaTajoDobleIm.data) +
+-                        (frameSize * frame));
++    // Particulas de carga (rombos)
++    if (GetRandomValue(0, 100) < 10) { // Reduced frequency (was 15)
++        float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
++        float dist = 40.0f + 20.0f * (1.0f - cp);
++        Vector2 pPos = { position.x + cosf(ang) * dist, position.y - 20 + sinf(ang) * dist };
++        Graphics::VFXSystem::GetInstance().SpawnParticleEx(pPos, {0, -50}, 0.2f, ac, 1.5f, Graphics::RenderType::RHOMB, BLEND_ADDITIVE); // Smaller particles
+     }
+ 
+-    float scale = 2.4f; // Ajuste para que se vea imponente
+-    float w = (float)ResourceManager::roperaTajoDoble.width * scale;
+-    float h = (float)ResourceManager::roperaTajoDoble.height * scale;
+-
+-    // Dibujar el tajo rotado
+-    Rectangle src = {0, 0, (float)ResourceManager::roperaTajoDoble.width,
+-                     (float)ResourceManager::roperaTajoDoble.height};
+-    // Si facing es a la izquierda, podemos elegir si flipear el tajo o dejar
+-    // que la rotaci├│n lo maneje
+-    if (facing.x < 0)
+-      src.height *= -1; // Invertimos verticalmente si miramos a la izquierda
+-                        // para que el arco se mantenga natural
+-
+-    Rectangle dest = {position.x, position.y - 20, w, h};
+-    Vector2 origin = {w * 0.5f, h * 0.5f};
+-
+-    DrawTexturePro(ResourceManager::roperaTajoDoble, src, dest, origin, ang,
+-                   WHITE);
+-  }
+-
+-  // ÔöÇÔöÇ Visual Carga ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+-  if (isCharging && holdTimer > 0) {
+-    float cp = fminf(holdTimer / 0.35f, 1.0f);
+-    DrawCircleLines((int)position.x, (int)position.y - 20,
+-                    radius + 8.0f + 20.0f * (1.0f - cp),
+-                    Fade({0, 220, 180, 255}, cp));
+-    if (cp >= 1.0f) {
+-      Color rc = CanDash() ? Color{0, 255, 180, 255} : Color{255, 200, 0, 255};
+-      if (sinf((float)g_gameTime * 30.0f) > 0)
+-        DrawCircleLines((int)position.x, (int)position.y - 20, radius + 14, rc);
++      // Brillo en el arma (aproximado)
++      DrawCircleGradient((int)position.x, (int)position.y - 20, 12.0f, Fade(ac, 0.3f), Fade(ac, 0)); // Smaller and dimmer
+     }
+-  }
+ 
+   // ÔöÇÔöÇ Visual Dash ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+   if (state == RoperaState::DASHING) {

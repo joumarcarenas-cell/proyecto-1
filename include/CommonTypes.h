@@ -109,18 +109,35 @@ struct GroundBurst {
     Color cBg = Fade(c, alpha * 0.25f);
     Color cLines = Fade(WHITE, alpha * 0.8f);
 
-    // Detección visual mejorada (Estilo anime/mago)
-    // 1. Círculo exterior con pulso sutil
+    // 1. Detección visual (Círculo de impacto sutil)
     DrawCircleLinesV(position, visualRadius, cLines);
-    DrawCircleLinesV(position, visualRadius + 2.0f, Fade(c, alpha * 0.4f));
-
-    // 2. Relleno suave que se desvanece
     DrawCircleV(position, visualRadius, cBg);
 
-    // 3. Destello central si es el impacto inicial (primer 30% de vida)
-    if (alpha > 0.7f) {
-      float flashT = (alpha - 0.7f) / 0.3f;
-      DrawCircleV(position, visualRadius * 0.6f * flashT, Fade(WHITE, flashT * 0.6f));
+    // 2. [NEW] HOJAS REALES (Blades/Leaves emerging from ground)
+    // Dibujamos 3-4 cuchillas afiladas en angulos distintos
+    float bladeProg = 1.0f - (lifetime / maxLifetime);
+    if (bladeProg > 1.0f) bladeProg = 1.0f;
+    
+    // Solo dibujamos las hojas en la fase inicial y media
+    if (alpha > 0.1f) {
+        for (int i = 0; i < 4; i++) {
+            float angle = (i * 90.0f + 25.0f) * DEG2RAD;
+            float h = (visualRadius * 1.5f) * sinf(bladeProg * PI); // Sube y baja
+            
+            Vector2 base = position;
+            Vector2 tip = { position.x + cosf(angle) * h * 0.8f, position.y + sinf(angle) * h * 0.4f - h * 0.6f };
+            Vector2 side = { position.x + cosf(angle + 0.3f) * h * 0.3f, position.y + sinf(angle + 0.3f) * h * 0.15f };
+
+            // Dibujo de la cuchilla afilada (Triangulo con gradiente manual)
+            DrawTriangle(base, side, tip, Fade(c, alpha));
+            DrawTriangle(base, tip, Vector2{side.x - 5, side.y - 5}, Fade(WHITE, alpha * 0.5f)); // Filo brillante
+        }
+    }
+
+    // 3. Destello si es impacto inicial
+    if (alpha > 0.8f) {
+      float flashT = (alpha - 0.8f) / 0.2f;
+      DrawCircleV(position, visualRadius * 0.7f, Fade(WHITE, flashT * 0.6f));
     }
   }
 };
@@ -155,6 +172,7 @@ struct DamageText {
   float maxLife;
   int damage;
   Color color;
+  bool isCritical = false;
 
   void Update(float dt) {
     position = Vector2Add(position, Vector2Scale(velocity, dt));
@@ -164,11 +182,11 @@ struct DamageText {
     if (life <= 0)
       return;
     float alpha = life / maxLife;
-    Color c = color;
+    Color c = isCritical ? GOLD : color;
     c.a = (unsigned char)(255.0f * alpha);
     Color oc = BLACK;
     oc.a = c.a;
-    int fs = 26; // Increased font size
+    int fs = isCritical ? 36 : 26; // Increased font size for crits
 
     const char* txt = TextFormat("%i", damage);
     int px = (int)position.x;
@@ -236,23 +254,29 @@ extern float g_timeScale;
 extern double g_gameTime;
 extern float hitstopTimer;
 extern float screenShake;
+extern bool g_showHitboxes;
 
 // --- ARENA HELPERS ---
 namespace Arena {
+constexpr float CENTER_X = 2000.0f;
+constexpr float CENTER_Y = 2000.0f;
+constexpr float RADIUS   = 2100.0f; // Expanded for 30x30 tiles (30 * 70 = 2100)
+
 inline bool IsInside(Vector2 pos, float radius) {
-  float dx = std::abs(pos.x - 2000.0f);
-  float dy = std::abs(pos.y - 2000.0f);
-  return (dx + 2.0f * dy) <= (1400.0f - radius * 2.236f);
+  float dx = std::abs(pos.x - CENTER_X);
+  float dy = std::abs(pos.y - CENTER_Y);
+  // Perspectiva isométrica: Y escala x2
+  return (dx + 2.0f * dy) <= (RADIUS - radius * 2.236f);
 }
 
 inline Vector2 GetClampedPos(Vector2 pos, float radius) {
-  float dx = pos.x - 2000.0f;
-  float dy = pos.y - 2000.0f;
-  float R = 1400.0f - radius * 2.236f;
+  float dx = pos.x - CENTER_X;
+  float dy = pos.y - CENTER_Y;
+  float R = RADIUS - radius * 2.236f;
   float current = std::abs(dx) + 2.0f * std::abs(dy);
   if (current > R) {
     float scale = R / current;
-    return {2000.0f + dx * scale, 2000.0f + dy * scale};
+    return {CENTER_X + dx * scale, CENTER_Y + dy * scale};
   }
   return pos;
 }
