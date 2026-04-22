@@ -10,6 +10,25 @@ namespace Graphics {
 
 enum class RenderType { CIRCLE, RHOMB, GLOW_LINE, SPRITE };
 
+// ─── SpriteAnimOverlay: Spritesheet animado en el mundo ──────────────
+struct SpriteAnimOverlay {
+  Texture2D* sheet   = nullptr;
+  int   frameCount   = 1;     // columnas del spritesheet
+  int   frameRows    = 1;     // filas (para sprites direccionales)
+  int   row          = 0;     // fila a usar
+  float frameDur     = 0.07f;
+  float timer        = 0.0f;
+  int   currentFrame = 0;
+  Vector2 pos;
+  float rotation     = 0.0f;  // grados — orientado al facing
+  float scale        = 1.0f;
+  Color tint         = WHITE;
+  bool  loop         = false;
+  bool  additive     = false;
+  float life         = 0.0f;  // tiempo total restante
+  float maxLife      = 1.0f;
+};
+
 struct Particle {
   Vector2 pos;
   Vector2 vel;
@@ -104,7 +123,16 @@ public:
     particles.push_back(p);
   }
 
-  void Clear() { particles.clear(); ghosts.clear(); }
+  void Clear() { particles.clear(); ghosts.clear(); overlays.clear(); }
+
+  // ─── SPRITE ANIM OVERLAYS ─────────────────────────────────────────
+  void SpawnOverlay(SpriteAnimOverlay o) {
+    if (o.sheet == nullptr || o.sheet->id == 0) return;
+    o.life = o.maxLife;
+    o.currentFrame = 0;
+    o.timer = 0.0f;
+    overlays.push_back(o);
+  }
 
   // ─── GHOST TRAILS (After-images) ─────────────────────
   struct Ghost {
@@ -125,23 +153,14 @@ public:
 
   void Update(float dt) {
     for (auto &p : particles) {
-      // Aplicar gravedad
       p.vel.y += p.gravity * dt;
-      
-      // Movimiento
       p.pos = Vector2Add(p.pos, Vector2Scale(p.vel, dt));
-      
-      // Friccion
       p.vel = Vector2Scale(p.vel, p.friction);
-      
-      // Rebote simple en el suelo (arena isometrica)
-      // Usamos el centro de la arena (2000, 2000) como referencia de plano si no hay plano exacto
-      if (p.useBounce && p.pos.y > 2800.0f) { // Suelo aproximado de la arena expandida
+      if (p.useBounce && p.pos.y > 2800.0f) {
           p.pos.y = 2800.0f;
           p.vel.y *= -p.bounciness;
-          p.vel.x *= 0.8f; // mas friccion al rebotar
+          p.vel.x *= 0.8f;
       }
-
       p.rotation += p.rotationVel * dt;
       p.life -= dt;
     }
@@ -157,6 +176,24 @@ public:
         std::remove_if(ghosts.begin(), ghosts.end(),
                        [](const Ghost &g) { return g.life <= 0; }),
         ghosts.end());
+
+    // Actualizar SpriteAnimOverlays
+    for (auto &o : overlays) {
+      o.life -= dt;
+      o.timer += dt;
+      if (o.timer >= o.frameDur) {
+        o.timer = 0.0f;
+        o.currentFrame++;
+        if (o.currentFrame >= o.frameCount) {
+          if (o.loop) o.currentFrame = 0;
+          else        o.currentFrame = o.frameCount - 1;
+        }
+      }
+    }
+    overlays.erase(
+        std::remove_if(overlays.begin(), overlays.end(),
+                       [](const SpriteAnimOverlay &o) { return o.life <= 0; }),
+        overlays.end());
   }
 
   void SubmitDraws() const {
@@ -217,12 +254,36 @@ public:
           Graphics::RenderLayer::VFX,
           p.blendMode);
     }
+
+    // 3. SpriteAnimOverlays
+    for (const auto &o : overlays) {
+      Graphics::RenderManager::GetInstance().Submit(
+          o.pos.y,
+          [o]() {
+            if (o.sheet == nullptr || o.sheet->id == 0) return;
+            float t = o.maxLife > 0 ? (o.life / o.maxLife) : 1.0f;
+            float alpha = (t < 0.3f) ? (t / 0.3f) : 1.0f;
+            Color tinted = Fade(o.tint, alpha);
+            float fw = (float)o.sheet->width  / o.frameCount;
+            float fh = (float)o.sheet->height / o.frameRows;
+            Rectangle src = { (float)o.currentFrame * fw, (float)o.row * fh, fw, fh };
+            float w = fw * o.scale;
+            float h = fh * o.scale;
+            Rectangle dest = { o.pos.x, o.pos.y, w, h };
+            Vector2 origin = { w * 0.5f, h * 0.5f };
+            if (o.additive) BeginBlendMode(BLEND_ADDITIVE);
+            DrawTexturePro(*o.sheet, src, dest, origin, o.rotation, tinted);
+            if (o.additive) EndBlendMode();
+          },
+          Graphics::RenderLayer::VFX);
+    }
   }
 
 private:
   VFXSystem() = default;
   std::vector<Particle> particles;
   std::vector<Ghost> ghosts;
+  std::vector<SpriteAnimOverlay> overlays;
 };
 
 // ────────────────────────────────────────────────────────────────────
@@ -319,4 +380,345 @@ inline void SpawnHitFlash(Vector2 pos, float radius, Color col) {
     VFXSystem::GetInstance().SpawnParticleEx(pos, {0, 0}, 0.12f, col, radius);
 }
 
+// ─── NUEVOS HELPERS CON SPRITESHEET VFX ──────────────────────────────
+
+// Tajo básico de la Ropera (weapon hit + chispas)
+// comboStep: 0=Estocada, 1=Tajo lateral, 2=Gran Estocada
+inline void SpawnSlashVFX(Vector2 pos, Vector2 facing, int comboStep) {
+    auto &vfx = VFXSystem::GetInstance();
+    float angle = atan2f(facing.y, facing.x) * RAD2DEG;
+
+    // Overlay spritesheet: 10_weaponhit_spritesheet (chispa metálica)
+    if (ResourceManager::vfxWeaponHit.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxWeaponHit;
+        o.frameCount = 8;
+        o.frameRows  = 1;
+        o.frameDur   = 0.04f;
+        o.pos        = Vector2Add(pos, Vector2Scale(facing, comboStep == 2 ? 60.0f : 40.0f));
+        o.rotation   = angle;
+        o.scale      = (comboStep == 2) ? 1.8f : 1.2f;
+        o.tint       = (comboStep == 2) ? Color{255, 220, 120, 255} : WHITE;
+        o.loop       = false;
+        o.additive   = true;
+        o.maxLife    = 0.32f;
+        vfx.SpawnOverlay(o);
+    }
+
+    // Overlay slash 48x48 (tajo visual grande en la posición del boss)
+    if (ResourceManager::vfxSlashLight.id != 0) {
+        SpriteAnimOverlay s;
+        s.sheet      = &ResourceManager::vfxSlashLight;
+        s.frameCount = 12;
+        s.frameRows  = 1;
+        s.frameDur   = 0.035f;
+        s.pos        = Vector2Add(pos, Vector2Scale(facing, 50.0f));
+        s.rotation   = angle + (comboStep == 1 ? 90.0f : 0.0f);
+        s.scale      = (comboStep == 2) ? 2.2f : 1.5f;
+        s.tint       = (comboStep == 1) ? Color{180, 255, 255, 230} : Color{255, 255, 200, 230};
+        s.loop       = false;
+        s.additive   = true;
+        s.maxLife    = 0.42f;
+        vfx.SpawnOverlay(s);
+    }
+
+    // Chispas de respaldo (siempre)
+    Color sc = (comboStep == 2) ? Color{255, 200, 80, 255} : Color{200, 255, 255, 255};
+    for (int i = 0; i < 6; i++) {
+        float a = atan2f(facing.y, facing.x) + (float)GetRandomValue(-30, 30) * DEG2RAD;
+        float spd = (float)GetRandomValue(200, 500);
+        vfx.SpawnParticleEx(Vector2Add(pos, Vector2Scale(facing, 40.0f)),
+            {cosf(a) * spd, sinf(a) * spd}, 0.18f, sc, 3.5f, RenderType::RHOMB, BLEND_ADDITIVE);
+    }
+}
+
+// Tajo pesado y Q de la Ropera (slash grande 128x128)
+inline void SpawnHeavySlashVFX(Vector2 pos, Vector2 facing, bool isUlt) {
+    auto &vfx = VFXSystem::GetInstance();
+    float angle = atan2f(facing.y, facing.x) * RAD2DEG;
+
+    if (ResourceManager::vfxSlashHeavy.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxSlashHeavy;
+        o.frameCount = 4;
+        o.frameRows  = 1;
+        o.frameDur   = 0.05f;
+        o.pos        = Vector2Add(pos, Vector2Scale(facing, 70.0f));
+        o.rotation   = angle;
+        o.scale      = isUlt ? 3.0f : 2.0f;
+        o.tint       = isUlt ? Color{255, 160, 40, 255} : Color{100, 255, 220, 255};
+        o.loop       = false;
+        o.additive   = true;
+        o.maxLife    = 0.22f;
+        vfx.SpawnOverlay(o);
+    }
+
+    // Weapon hit spark encima
+    if (ResourceManager::vfxWeaponHit.id != 0) {
+        SpriteAnimOverlay w;
+        w.sheet      = &ResourceManager::vfxWeaponHit;
+        w.frameCount = 8;
+        w.frameRows  = 1;
+        w.frameDur   = 0.03f;
+        w.pos        = Vector2Add(pos, Vector2Scale(facing, 80.0f));
+        w.rotation   = angle + 45.0f;
+        w.scale      = isUlt ? 2.5f : 1.8f;
+        w.tint       = isUlt ? Color{255, 200, 80, 255} : WHITE;
+        w.loop       = false;
+        w.additive   = true;
+        w.maxLife    = 0.28f;
+        vfx.SpawnOverlay(w);
+    }
+}
+
+// Perfect Dodge Counter (Holy VFX — 3 fases sobre el jugador)
+inline void SpawnHolyCounterVFX(Vector2 playerPos) {
+    auto &vfx = VFXSystem::GetInstance();
+
+    if (ResourceManager::vfxHolyInitial.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxHolyInitial;
+        o.frameCount = 4;
+        o.frameRows  = 1;
+        o.frameDur   = 0.06f;
+        o.pos        = {playerPos.x, playerPos.y - 30.0f};
+        o.rotation   = 0.0f;
+        o.scale      = 3.0f;
+        o.tint       = {255, 240, 180, 255};
+        o.loop       = false;
+        o.additive   = true;
+        o.maxLife    = 0.25f;
+        vfx.SpawnOverlay(o);
+    }
+
+    if (ResourceManager::vfxHolyLoop.id != 0) {
+        SpriteAnimOverlay l;
+        l.sheet      = &ResourceManager::vfxHolyLoop;
+        l.frameCount = 6;
+        l.frameRows  = 1;
+        l.frameDur   = 0.07f;
+        l.pos        = {playerPos.x, playerPos.y - 30.0f};
+        l.rotation   = 0.0f;
+        l.scale      = 3.5f;
+        l.tint       = {255, 255, 200, 220};
+        l.loop       = true;
+        l.additive   = true;
+        l.maxLife    = 0.55f;
+        vfx.SpawnOverlay(l);
+    }
+
+    // Chispas doradas de realce
+    for (int i = 0; i < 12; i++) {
+        float a = (float)i * (360.0f / 12.0f) * DEG2RAD;
+        float spd = (float)GetRandomValue(150, 350);
+        vfx.SpawnFull(
+            {playerPos.x, playerPos.y - 20.0f},
+            {cosf(a) * spd, sinf(a) * spd},
+            0.5f, {255, 240, 100, 255}, {255, 200, 50, 0},
+            4.5f, RenderType::RHOMB, BLEND_ADDITIVE,
+            0, 0.90f, (float)GetRandomValue(0, 360), 200.0f, false
+        );
+    }
+}
+
+// Impacto del counter en el boss (Holy Impact)
+inline void SpawnHolyImpactVFX(Vector2 bossPos) {
+    auto &vfx = VFXSystem::GetInstance();
+
+    if (ResourceManager::vfxHolyImpact.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxHolyImpact;
+        o.frameCount = 5;
+        o.frameRows  = 1;
+        o.frameDur   = 0.05f;
+        o.pos        = bossPos;
+        o.rotation   = (float)GetRandomValue(0, 360);
+        o.scale      = 4.0f;
+        o.tint       = {255, 255, 220, 255};
+        o.loop       = false;
+        o.additive   = true;
+        o.maxLife    = 0.28f;
+        vfx.SpawnOverlay(o);
+    }
+
+    // Onda de choque dorada
+    SpawnSonicBoom(bossPos, 200.0f);
+    for (int i = 0; i < 8; i++) {
+        float a = (float)i * 45.0f * DEG2RAD;
+        vfx.SpawnParticleEx(bossPos, {cosf(a) * 500.0f, sinf(a) * 500.0f},
+            0.3f, {255, 230, 100, 255}, 5.0f, RenderType::RHOMB, BLEND_ADDITIVE);
+    }
+}
+
+// Impacto mágico (Mago: proyectiles, magic8, etc.)
+inline void SpawnMagicHitVFX(Vector2 pos, Color tint) {
+    auto &vfx = VFXSystem::GetInstance();
+
+    if (ResourceManager::vfxMagicHit.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxMagicHit;
+        o.frameCount = 8;
+        o.frameRows  = 1;
+        o.frameDur   = 0.04f;
+        o.pos        = pos;
+        o.rotation   = (float)GetRandomValue(0, 360);
+        o.scale      = 2.0f;
+        o.tint       = tint;
+        o.loop       = false;
+        o.additive   = true;
+        o.maxLife    = 0.35f;
+        vfx.SpawnOverlay(o);
+    }
+
+    // Partículas mágicas de apoyo
+    for (int i = 0; i < 8; i++) {
+        float a = (float)GetRandomValue(0, 360) * DEG2RAD;
+        float spd = (float)GetRandomValue(200, 500);
+        vfx.SpawnParticleEx(pos, {cosf(a)*spd, sinf(a)*spd},
+            0.25f, tint, 3.5f, RenderType::RHOMB, BLEND_ADDITIVE);
+    }
+}
+
+// Tornado / Vortex del Mago (loop durante el tornado)
+inline void SpawnVortexParticle(Vector2 pos) {
+    auto &vfx = VFXSystem::GetInstance();
+
+    if (ResourceManager::vfxVortex.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxVortex;
+        o.frameCount = 8;
+        o.frameRows  = 1;
+        o.frameDur   = 0.06f;
+        o.pos        = pos;
+        o.rotation   = (float)GetRandomValue(0, 360);
+        o.scale      = 3.5f;
+        o.tint       = {100, 200, 255, 200};
+        o.loop       = true;
+        o.additive   = true;
+        o.maxLife    = 0.5f;
+        vfx.SpawnOverlay(o);
+    }
+}
+
+// Congelación del Mago (hit de hielo sobre el boss)
+inline void SpawnFreezeVFX(Vector2 pos) {
+    auto &vfx = VFXSystem::GetInstance();
+
+    if (ResourceManager::vfxFreezing.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxFreezing;
+        o.frameCount = 8;
+        o.frameRows  = 1;
+        o.frameDur   = 0.06f;
+        o.pos        = pos;
+        o.rotation   = (float)GetRandomValue(-20, 20);
+        o.scale      = 4.5f;
+        o.tint       = {150, 230, 255, 220};
+        o.loop       = false;
+        o.additive   = false;
+        o.maxLife    = 0.55f;
+        vfx.SpawnOverlay(o);
+    }
+
+    // Cristales de hielo de apoyo
+    for (int i = 0; i < 8; i++) {
+        float a = (float)i * 45.0f * DEG2RAD;
+        vfx.SpawnFull(pos,
+            {cosf(a) * 220.0f, sinf(a) * 220.0f}, 0.6f,
+            {200, 240, 255, 255}, {100, 180, 255, 0},
+            5.5f, RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.90f,
+            (float)GetRandomValue(0, 360), 150.0f, false);
+    }
+
+    SpawnWaterRipple(pos, 120.0f, {150, 220, 255, 255});
+}
+
+// Q Fantasma del Segador (phantom slash spritesheet)
+inline void SpawnPhantomSlashVFX(Vector2 pos, Vector2 facing, int slashIdx) {
+    auto &vfx = VFXSystem::GetInstance();
+    float angle = atan2f(facing.y, facing.x) * RAD2DEG + (slashIdx == 0 ? -45.0f : 45.0f);
+
+    if (ResourceManager::vfxPhantom.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxPhantom;
+        o.frameCount = 8;
+        o.frameRows  = 1;
+        o.frameDur   = 0.05f;
+        o.pos        = Vector2Add(pos, Vector2Scale(facing, 80.0f));
+        o.rotation   = angle;
+        o.scale      = 2.5f;
+        o.tint       = {120, 0, 200, 220};
+        o.loop       = false;
+        o.additive   = true;
+        o.maxLife    = 0.42f;
+        vfx.SpawnOverlay(o);
+    }
+
+    // Niebla espectral
+    for (int i = 0; i < 6; i++) {
+        float a = angle * DEG2RAD + (float)GetRandomValue(-40, 40) * DEG2RAD;
+        float spd = (float)GetRandomValue(150, 350);
+        vfx.SpawnFull(
+            Vector2Add(pos, Vector2Scale(facing, 60.0f)),
+            {cosf(a) * spd, sinf(a) * spd},
+            0.4f, {80, 0, 140, 200}, {0, 0, 0, 0},
+            8.0f, RenderType::RHOMB, BLEND_ADDITIVE,
+            0, 0.88f, (float)GetRandomValue(0, 360), 300.0f, false
+        );
+    }
+}
+
+// Aura de nebulosa del Segador (durante la Ultimate)
+inline void SpawnNebulaAura(Vector2 pos) {
+    auto &vfx = VFXSystem::GetInstance();
+
+    if (ResourceManager::vfxNebula.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxNebula;
+        o.frameCount = 8;
+        o.frameRows  = 1;
+        o.frameDur   = 0.08f;
+        o.pos        = {pos.x, pos.y - 20.0f};
+        o.rotation   = (float)GetRandomValue(-15, 15);
+        o.scale      = 4.0f;
+        o.tint       = {60, 0, 120, 180};
+        o.loop       = true;
+        o.additive   = true;
+        o.maxLife    = 0.6f;
+        vfx.SpawnOverlay(o);
+    }
+}
+
+// Hechizo maligno del Boss Ether Corrupto (Felspell)
+inline void SpawnFelspellBurst(Vector2 pos) {
+    auto &vfx = VFXSystem::GetInstance();
+
+    if (ResourceManager::vfxFelspell.id != 0) {
+        SpriteAnimOverlay o;
+        o.sheet      = &ResourceManager::vfxFelspell;
+        o.frameCount = 8;
+        o.frameRows  = 1;
+        o.frameDur   = 0.07f;
+        o.pos        = pos;
+        o.rotation   = (float)GetRandomValue(0, 360);
+        o.scale      = 5.0f;
+        o.tint       = {200, 0, 80, 220};
+        o.loop       = false;
+        o.additive   = true;
+        o.maxLife    = 0.6f;
+        vfx.SpawnOverlay(o);
+    }
+
+    // Partículas oscuras de apoyo
+    for (int i = 0; i < 10; i++) {
+        float a = (float)GetRandomValue(0, 360) * DEG2RAD;
+        float spd = (float)GetRandomValue(250, 600);
+        vfx.SpawnFull(pos, {cosf(a)*spd, sinf(a)*spd},
+            0.5f, {180, 0, 60, 255}, {40, 0, 10, 0},
+            6.0f, RenderType::RHOMB, BLEND_ADDITIVE,
+            0, 0.92f, (float)GetRandomValue(0, 360), 250.0f, false);
+    }
+}
+
 } // namespace Graphics
+

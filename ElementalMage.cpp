@@ -671,7 +671,7 @@ void ElementalMage::UpdateEntities(float dt) {
         t.exploded = true;
       }
       
-      // [NEW] VORTEX VISUALS: Remolino de agua y hielo
+      // [NEW] VORTEX VISUALS: Remolino de agua y hielo + spritesheet overlay
       float angle = (float)GetTime() * 10.0f;
       for (int i = 0; i < 3; i++) {
           float a = angle + (i * 120.0f * DEG2RAD);
@@ -681,6 +681,10 @@ void ElementalMage::UpdateEntities(float dt) {
               partPos, {0, -100.0f}, 0.4f, SKYBLUE, {255, 255, 255, 0},
               (float)GetRandomValue(6, 12), Graphics::RenderType::RHOMB, BLEND_ALPHA
           );
+      }
+      // Overlay vortex spritesheet (probabilístico, no cada frame)
+      if (GetRandomValue(0, 100) < 20) {
+          Graphics::SpawnVortexParticle(t.position);
       }
       
       if (GetRandomValue(0, 100) < 45) {
@@ -795,12 +799,21 @@ void ElementalMage::CheckCollisions(Boss &boss) {
       if (p.isCrescent && isPerfectCounter) {
           energy = fminf(maxEnergy, energy + 30.0f);
           isPerfectCounter = false;
-          Graphics::SpawnImpactBurst(position, {0, -1}, GetHUDColor(), WHITE, 15, 6);
+          Graphics::SpawnHolyCounterVFX(position);
+          Graphics::SpawnHolyImpactVFX(boss.position);
           finalDmg *= 1.5f;
       }
       
       boss.TakeDamage(finalDmg, 3.0f, {0, 0});
       boss.ApplyElement(p.element);
+
+      // VFX: impacto mágico en el punto de contacto
+      Color hitTint = (p.element == ElementMode::LIGHTNING) ? YELLOW : SKYBLUE;
+      Graphics::SpawnMagicHitVFX(boss.position, hitTint);
+      // Si es crescent de hielo, añadir congelación
+      if (p.isCrescent) {
+          Graphics::SpawnFreezeVFX(boss.position);
+      }
 
       // Otorgar carga si el ataque está disponible
       if (p.isKunai || p.element == ElementMode::LIGHTNING) {
@@ -876,6 +889,7 @@ void ElementalMage::CheckCollisions(Boss &boss) {
         }
 
         // [NEW] VFX de ICEBERG (Explosión masiva con física)
+        Graphics::SpawnFreezeVFX(t.position);  // Congelación spritesheet
         Graphics::SpawnWaterRipple(t.position, 280.0f, SKYBLUE);
         Graphics::SpawnWaterRipple(t.position, 320.0f, WHITE);
         
@@ -927,7 +941,8 @@ void ElementalMage::CheckCollisions(Boss &boss) {
       if (ha.isHeavy && isPerfectCounter) {
           energy = fminf(maxEnergy, energy + 30.0f);
           isPerfectCounter = false;
-          Graphics::SpawnImpactBurst(position, {0, -1}, GetHUDColor(), WHITE, 15, 6);
+          Graphics::SpawnHolyCounterVFX(position);
+          Graphics::SpawnHolyImpactVFX(boss.position);
           finalDmg *= 1.5f;
       }
 

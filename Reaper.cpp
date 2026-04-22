@@ -105,6 +105,8 @@ void Reaper::Update() {
               Graphics::RenderType::RHOMB, BLEND_ALPHA, 500.0f, 0.95f, (float)GetRandomValue(0, 360), 0, true
           );
       }
+      // VFX: Slash fantasma en cada estallido del suelo
+      Graphics::SpawnPhantomSlashVFX(gb.position, qBurstDir, qBurstsSpawned % 2);
     }
     if (qBurstsSpawned >= 5)
       qActive = false;
@@ -196,8 +198,9 @@ void Reaper::Update() {
              isCharging = false;
              holdTimer = 0;
              
-             // Flash blanco en el personaje
+             // Flash + Holy VFX en el jugador
              hitFlashTimer = 0.3f;
+             Graphics::SpawnHolyCounterVFX(position);
         }
 
         if (holdTimer >= 0.35f && isCharging) {
@@ -492,6 +495,10 @@ void Reaper::Update() {
                 Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.92f, (float)GetRandomValue(0, 360), 400.0f
             );
         }
+        // VFX: Nebulosa oscura durante el tajo final de la Ult
+        if (GetRandomValue(0, 100) < 40) {
+            Graphics::SpawnNebulaAura(position);
+        }
 
         attackPhaseTimer -= dt;
       if (attackPhaseTimer <= 0) {
@@ -715,17 +722,16 @@ void Reaper::CheckCollisions(Boss &boss) {
     if (isPerfectCounter) {
         energy = fminf(maxEnergy, energy + 30.0f);
         isPerfectCounter = false;
-        Graphics::SpawnImpactBurst(position, {0, -1}, GetHUDColor(), WHITE, 15, 6);
+        Graphics::SpawnHolyCounterVFX(position);
+        Graphics::SpawnHolyImpactVFX(boss.position);
         dmg *= 1.5f;
     }
-    dmg *= rpg.DamageMultiplierMagical(); // Damage +15%
+    dmg *= rpg.DamageMultiplierMagical();
     lastDamageType = DamageType::MAGICAL;
     boss.TakeDamage(dmg, 60.0f, {0, 0});
     energy = fminf(maxEnergy, energy + 12.5f);
-
-    hitstopTimer = 0.18f; // +0.06s para darle más peso
-    velocity =
-        Vector2Add(velocity, Vector2Scale(facing, 420.0f)); // reducido 50%
+    hitstopTimer = 0.18f;
+    velocity = Vector2Add(velocity, Vector2Scale(facing, 420.0f));
   }
 
   // --- Ground Bursts Q: colision hit-once con el boss ---

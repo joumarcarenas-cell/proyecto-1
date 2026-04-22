@@ -262,6 +262,8 @@ void Ropera::Update() {
           isCharging = false;
           holdTimer = 0;
           velocity = Vector2Scale(facing, 2000.0f);
+          // VFX: Holy counter al activarse el contraataque perfecto
+          Graphics::SpawnHolyCounterVFX(position);
       }
 
       if (holdTimer >= 0.35f && isCharging) {
@@ -555,6 +557,8 @@ void Ropera::CheckCollisions(Boss &boss) {
     if (comboStep == 2) screenShake = fmaxf(screenShake, 1.8f); 
     if (ultActive) Graphics::SpawnStyledBlood(boss.position, facing);
     if (ultActive) TriggerSwords(boss.position);
+    // VFX: Tajo sprite sobre el punto de impacto
+    Graphics::SpawnSlashVFX(boss.position, facing, comboStep);
   }
 
   if (CheckHeavyCollision(boss)) {
@@ -562,7 +566,8 @@ void Ropera::CheckCollisions(Boss &boss) {
     if (isPerfectCounter) {
         energy = fminf(maxEnergy, energy + 30.0f);
         isPerfectCounter = false;
-        Graphics::SpawnImpactBurst(position, {0, -1}, GetHUDColor(), WHITE, 15, 6);
+        Graphics::SpawnHolyCounterVFX(position);
+        Graphics::SpawnHolyImpactVFX(boss.position);
         dmg *= 1.5f;
     }
     if (eBuffActive) dmg += boss.maxHp * eMaxHpBonusFrac;
@@ -571,15 +576,17 @@ void Ropera::CheckCollisions(Boss &boss) {
     boss.TakeDamage(dmg, 80.0f, {0, 0});
     energy = fminf(maxEnergy, energy + 10.0f);
     if (eBuffActive) hp = fminf(maxHp, hp + dmg * eLifestealFrac);
-    hitstopTimer = 0.18f; // +0.06s para darle más peso al impacto pesado
+    hitstopTimer = 0.18f;
     velocity = Vector2Add(velocity, Vector2Scale(facing, 385.0f)); 
     if (ultActive) {
       TriggerSwords(boss.position);
       hasLockedTarget = true;
       lockedHeavyTargetPos = boss.position;
-      boss.velocity = {0, 0}; // Bloquea al boss al impactar la super estocada
+      boss.velocity = {0, 0};
       Graphics::SpawnStyledBlood(boss.position, facing); 
     }
+    // VFX: Slash pesado sobre el punto de impacto
+    Graphics::SpawnHeavySlashVFX(boss.position, facing, ultActive);
     Color impactCol = ultActive ? Color{255, 140, 0, 255} : Color{0, 255, 200, 255};
     Graphics::SpawnImpactBurst(boss.position, facing, WHITE, impactCol, 12, 8);
     Graphics::SpawnSonicBoom(boss.position, 280.0f);
