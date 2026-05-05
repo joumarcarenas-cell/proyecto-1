@@ -45,7 +45,7 @@
 Reaper g_reaper({2000, 2000});
 Ropera g_ropera({2000, 2000});
 ElementalMage g_mage({2000, 2000});
-Player *g_activePlayer = &g_reaper; // Apuntado por las escenas
+Player *g_activePlayer = &g_mage; // Apuntado por las escenas
 
 // Variables de estado compartidas entre Reaper.cpp / GameplayScene.cpp
 bool isTimeStopped = false;
@@ -130,20 +130,6 @@ Texture2D ResourceManager::texVfxSmoke;
 Texture2D ResourceManager::texVfxSplash;
 Texture2D ResourceManager::texVfxGlow;
 
-// Nuevos VFX spritesheets
-Texture2D ResourceManager::vfxSlashLight;
-Texture2D ResourceManager::vfxSlashHeavy;
-Texture2D ResourceManager::vfxWeaponHit;
-Texture2D ResourceManager::vfxHolyInitial;
-Texture2D ResourceManager::vfxHolyLoop;
-Texture2D ResourceManager::vfxHolyImpact;
-Texture2D ResourceManager::vfxMagicHit;
-Texture2D ResourceManager::vfxVortex;
-Texture2D ResourceManager::vfxFreezing;
-Texture2D ResourceManager::vfxPhantom;
-Texture2D ResourceManager::vfxNebula;
-Texture2D ResourceManager::vfxFelspell;
-
 void ResourceManager::Load() {
   texVida = LoadTexture("assets/vida.png");
   texEnergia = LoadTexture("assets/energia.png");
@@ -165,6 +151,7 @@ void ResourceManager::Load() {
   texEnemy = LoadGifAsSpritesheet("assets/golem.gif", &texEnemyFrames);
   texEnemyGolem = texEnemy; // maintaining legacy reference if needed
 
+  /* ROPERA ASSETS (LEGACY - COMENTADO PARA REDISEÑO)
   roperaIdle = LoadGifAsSpritesheet("assets/Ropera/idle.gif", &roperaIdleFrames);
   roperaRun = LoadGifAsSpritesheet("assets/Ropera/run.gif", &roperaRunFrames);
   roperaDash = LoadGifAsSpritesheet("assets/Ropera/dash.gif", &roperaDashFrames);
@@ -176,11 +163,12 @@ void ResourceManager::Load() {
   roperaDeath = LoadTexture("assets/Ropera/15 - death.png");
 
   roperaTajoDoble = LoadGifAsSpritesheet("assets/Ropera/habilidades/tajo doble.gif", &roperaTajoFrames);
+  */
 
   // Reaper animations / icons
-  reaperQ = LoadTexture("assets/Reaper/habilidad Q.png");
-  reaperE = LoadTexture("assets/Reaper/habilidad E.png");
-  reaperR = LoadTexture("assets/Reaper/habilidad R.png");
+  // reaperQ = LoadTexture("assets/Reaper/habilidad Q.png");
+  // reaperE = LoadTexture("assets/Reaper/habilidad E.png");
+  // reaperR = LoadTexture("assets/Reaper/habilidad R.png");
 
   // VFX Assets - Usan subcarpeta assets/vfx/
   texVfxSpark = LoadTexture("assets/vfx/spark.png");
@@ -188,92 +176,11 @@ void ResourceManager::Load() {
   texVfxSplash = LoadTexture("assets/vfx/splash.png");
   texVfxGlow = LoadTexture("assets/vfx/glow.png");
 
-  // ─── Nuevos VFX Spritesheets ─────────────────────────────────────
-  // Slash leve: Combinar frames PNG individuales de 48x48 Slash Part 5
-  // (frames 49..60) en un strip horizontal de 12 frames
-  {
-    const char* slashFiles[12] = {
-      "assets/vfx/48x48 Slash Free/Part 5/49.png",
-      "assets/vfx/48x48 Slash Free/Part 5/50.png",
-      "assets/vfx/48x48 Slash Free/Part 5/51.png",
-      "assets/vfx/48x48 Slash Free/Part 5/52.png",
-      "assets/vfx/48x48 Slash Free/Part 5/53.png",
-      "assets/vfx/48x48 Slash Free/Part 5/54.png",
-      "assets/vfx/48x48 Slash Free/Part 5/55.png",
-      "assets/vfx/48x48 Slash Free/Part 5/56.png",
-      "assets/vfx/48x48 Slash Free/Part 5/57.png",
-      "assets/vfx/48x48 Slash Free/Part 5/58.png",
-      "assets/vfx/48x48 Slash Free/Part 5/59.png",
-      "assets/vfx/48x48 Slash Free/Part 5/60.png",
-    };
-    Image first = LoadImage(slashFiles[0]);
-    if (first.data) {
-      int fw = first.width, fh = first.height;
-      Image strip = GenImageColor(fw * 12, fh, BLANK);
-      ImageDraw(&strip, first, {0,0,(float)fw,(float)fh}, {0,0,(float)fw,(float)fh}, WHITE);
-      for (int i = 1; i < 12; i++) {
-        Image fr = LoadImage(slashFiles[i]);
-        if (fr.data) {
-          ImageDraw(&strip, fr, {0,0,(float)fw,(float)fh}, {(float)(fw*i),0,(float)fw,(float)fh}, WHITE);
-          UnloadImage(fr);
-        }
-      }
-      vfxSlashLight = LoadTextureFromImage(strip);
-      UnloadImage(strip);
-      UnloadImage(first);
-    }
-  }
-
-  // Slash pesado: Free/Part 1 (03.png..06.png) → strip de 4 frames
-  {
-    const char* heavyFiles[4] = {
-      "assets/vfx/Free/Part 1/03.png",
-      "assets/vfx/Free/Part 1/04.png",
-      "assets/vfx/Free/Part 1/05.png",
-      "assets/vfx/Free/Part 1/06.png",
-    };
-    Image first = LoadImage(heavyFiles[0]);
-    if (first.data) {
-      int fw = first.width, fh = first.height;
-      Image strip = GenImageColor(fw * 4, fh, BLANK);
-      ImageDraw(&strip, first, {0,0,(float)fw,(float)fh}, {0,0,(float)fw,(float)fh}, WHITE);
-      for (int i = 1; i < 4; i++) {
-        Image fr = LoadImage(heavyFiles[i]);
-        if (fr.data) {
-          ImageDraw(&strip, fr, {0,0,(float)fw,(float)fh}, {(float)(fw*i),0,(float)fw,(float)fh}, WHITE);
-          UnloadImage(fr);
-        }
-      }
-      vfxSlashHeavy = LoadTextureFromImage(strip);
-      UnloadImage(strip);
-      UnloadImage(first);
-    }
-  }
-
-  // Weapon Hit (chispa metálica): spritesheet directo
-  vfxWeaponHit = LoadTexture("assets/vfx/10_weaponhit_spritesheet.png");
-
-  // Holy VFX 01 (Perfect Dodge Counter) — 3 archivos separados
-  vfxHolyInitial  = LoadTexture("assets/vfx/Holy VFX 01/Holy VFX 01 Initial.png");
-  vfxHolyLoop     = LoadTexture("assets/vfx/Holy VFX 01/Holy VFX 01 Repeatable.png");
-  vfxHolyImpact   = LoadTexture("assets/vfx/Holy VFX 01/Holy VFX 01 Impact.png");
-
-  // Mago: impacto mágico, vortex, congelación
-  vfxMagicHit  = LoadTexture("assets/vfx/5_magickahit_spritesheet.png");
-  vfxVortex    = LoadTexture("assets/vfx/13_vortex_spritesheet.png");
-  vfxFreezing  = LoadTexture("assets/vfx/19_freezing_spritesheet.png");
-
-  // Segador: fantasma (Q) y nebulosa (Ult)
-  vfxPhantom = LoadTexture("assets/vfx/14_phantom_spritesheet.png");
-  vfxNebula  = LoadTexture("assets/vfx/12_nebula_spritesheet.png");
-
-  // Boss Ether Corrupto: felspell
-  vfxFelspell = LoadTexture("assets/vfx/17_felspell_spritesheet.png");
-
-  // Ropera 8-Direction Sheets
+  /* ROPERA 8-DIR (LEGACY)
   ropera8Idle = LoadTexture("assets/Ropera/ropera.png");
   ropera8Run = LoadTexture("assets/Ropera/ropera_run.png");
   ropera8Attack = LoadTexture("assets/Ropera/ropera_attack.png");
+  */
 
   // Props
   texPropsRocks = LoadTexture("assets/props/rocks.png");
@@ -311,20 +218,6 @@ void ResourceManager::Unload() {
   UnloadTexture(texVfxSmoke);
   UnloadTexture(texVfxSplash);
   UnloadTexture(texVfxGlow);
-
-  // Nuevos VFX
-  UnloadTexture(vfxSlashLight);
-  UnloadTexture(vfxSlashHeavy);
-  UnloadTexture(vfxWeaponHit);
-  UnloadTexture(vfxHolyInitial);
-  UnloadTexture(vfxHolyLoop);
-  UnloadTexture(vfxHolyImpact);
-  UnloadTexture(vfxMagicHit);
-  UnloadTexture(vfxVortex);
-  UnloadTexture(vfxFreezing);
-  UnloadTexture(vfxPhantom);
-  UnloadTexture(vfxNebula);
-  UnloadTexture(vfxFelspell);
 
   UnloadTexture(ropera8Idle);
   UnloadTexture(ropera8Run);

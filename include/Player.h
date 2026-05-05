@@ -58,7 +58,15 @@ public:
   float m_dashTimer = 0.0f; // Time since last dash started
   static constexpr float PERFECT_DODGE_WINDOW = 0.15f; // Window for perfect dodge (Ampliado para mejor accesibilidad)
 
+  bool isAdminMode = false;
+
   void UpdateDash(float dt) {
+    if (isAdminMode) {
+      dashCharges = maxDashCharges;
+      dashCooldown1 = 0;
+      dashCooldown2 = 0;
+      return;
+    }
     if (dashCooldown1 > 0) {
       dashCooldown1 -= dt;
       if (dashCooldown1 <= 0)
@@ -73,6 +81,7 @@ public:
 
   bool CanDash() const { return dashCharges > 0; }
   void UseDash() {
+    if (isAdminMode) return; // No consume cargas en modo admin
     if (dashCharges > 0) {
       dashCharges--;
       if (dashCooldown1 <= 0)
@@ -118,6 +127,7 @@ public:
   virtual void CancelAttack() = 0;
 
   virtual void TakeDamage(float amount, Vector2 pushVel) {
+      if (isAdminMode) return; // MODO ADMIN: Inmortalidad
       if (IsImmune()) {
           // Check for perfect dodge
           if (m_dashTimer <= PERFECT_DODGE_WINDOW && !hasPerfectDodgeBuff) {

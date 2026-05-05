@@ -549,8 +549,8 @@ private:
 // =============================================================
 class AnimeEmitter {
 public:
-    // Rayo procedimental con jitter (recursivo o iterativo)
-    static void SpawnLightning(Vector2 start, Vector2 end, Color color, float width = 2.5f) {
+    // Rayo procedimental de Alta Definición con ramificaciones (Forks)
+    static void SpawnLightning(Vector2 start, Vector2 end, Color color, float width = 2.0f, int generation = 0, bool canFork = true) {
         auto& vfx = Graphics::VFXSystem::GetInstance();
         Vector2 dir = Vector2Subtract(end, start);
         float dist = Vector2Length(dir);
@@ -559,8 +559,9 @@ public:
         Vector2 unit = Vector2Normalize(dir);
         Vector2 perp = { -unit.y, unit.x };
 
-        int segments = (int)(dist / 15.0f);
-        if (segments < 2) segments = 2;
+        // Más segmentos para mayor complejidad en la forma
+        int segments = (int)(dist / 18.0f); 
+        if (segments < 3) segments = 3;
 
         Vector2 prev = start;
         for (int i = 1; i <= segments; i++) {
@@ -568,35 +569,62 @@ public:
             Vector2 next = Vector2Add(start, Vector2Scale(unit, dist * t));
             
             if (i < segments) {
-                float offset = (float)GetRandomValue(-15, 15);
+                // Jitter un poco más pronunciado para complejidad visual
+                float jitterMax = (generation == 0) ? 12.0f : 5.0f;
+                float offset = (float)GetRandomValue(-(int)jitterMax, (int)jitterMax);
                 next = Vector2Add(next, Vector2Scale(perp, offset));
             }
 
-            // Spawnear una partícula tipo "línea" (usando un rombo muy estirado)
             Vector2 mid = Vector2Lerp(prev, next, 0.5f);
             Vector2 segmentDir = Vector2Subtract(next, prev);
             float segmentLen = Vector2Length(segmentDir);
             float angle = atan2f(segmentDir.y, segmentDir.x);
 
-            vfx.SpawnHybrid(mid, {0,0}, 0.12f, WHITE, color, segmentLen * 0.5f, 
+            // Núcleo nítido
+            vfx.SpawnHybrid(mid, {0,0}, 0.10f, WHITE, color, segmentLen * 0.52f, 
                            Graphics::RenderType::RHOMB, BLEND_ADDITIVE, angle * RAD2DEG);
+
+            // Nodo de brillo sutil
+            if (i < segments) {
+                vfx.SpawnPremium(next, {0,0}, {0,0}, 0.12f, WHITE, Fade(color, 0), width * 1.5f, 0.0f, 
+                                 Graphics::RenderType::SDF_CIRCLE, BLEND_ADDITIVE, Graphics::EasingType::EASE_OUT_EXPO);
+            }
+
+            // Ramificaciones cortas con 5% de probabilidad
+            if (canFork && generation == 0 && i < segments - 1 && GetRandomValue(0, 100) < 5) {
+                float branchAngle = (float)GetRandomValue(40, 70) * (GetRandomValue(0, 1) == 0 ? 1 : -1) * DEG2RAD;
+                float nx = unit.x * cosf(branchAngle) - unit.y * sinf(branchAngle);
+                float ny = unit.x * sinf(branchAngle) + unit.y * cosf(branchAngle);
+                Vector2 branchDir = {nx, ny};
+                // Ramificaciones muy cortas (15% - 25% de la longitud total)
+                float branchLen = dist * (float)GetRandomValue(15, 25) * 0.01f;
+                Vector2 branchEnd = Vector2Add(next, Vector2Scale(branchDir, branchLen));
+                
+                SpawnLightning(next, branchEnd, color, width * 0.4f, generation + 1, false);
+            }
+
             prev = next;
         }
 
-        // Glow en el impacto
-        vfx.SpawnParticleEx(end, {0,0}, 0.2f, color, 25.0f, Graphics::RenderType::CIRCLE, BLEND_ADDITIVE);
-        vfx.SpawnParticleEx(end, {0,0}, 0.1f, WHITE, 12.0f, Graphics::RenderType::CIRCLE, BLEND_ADDITIVE);
+        // Glow intenso en el impacto final (solo en la rama principal, más nítido)
+        if (generation == 0) {
+            vfx.SpawnPremium(end, {0,0}, {0,0}, 0.25f, color, Fade(color, 0), 25.0f, 0.0f, 
+                             Graphics::RenderType::SDF_CIRCLE, BLEND_ADDITIVE, Graphics::EasingType::EASE_OUT_EXPO);
+            vfx.SpawnPremium(end, {0,0}, {0,0}, 0.15f, WHITE, Fade(color, 0), 10.0f, 0.0f, 
+                             Graphics::RenderType::SDF_CIRCLE, BLEND_ADDITIVE, Graphics::EasingType::EASE_OUT_EXPO);
+        }
     }
 
     static void SpawnAnimeImpact(Vector2 pos, Color col) {
         auto& vfx = Graphics::VFXSystem::GetInstance();
-        // Burst circular de diamantes
-        for (int i = 0; i < 12; i++) {
+        // Burst romboidal rápido (más simple que el estelar)
+        for (int i = 0; i < 10; i++) { // Reducido de 16 a 10
             float angle = (float)GetRandomValue(0, 360) * DEG2RAD;
-            float speed = (float)GetRandomValue(200, 500);
-            vfx.SpawnParticleEx(pos, {cosf(angle) * speed, sinf(angle) * speed}, 
-                               0.3f, col, (float)GetRandomValue(4, 8), 
-                               Graphics::RenderType::RHOMB, BLEND_ADDITIVE);
+            float speed = (float)GetRandomValue(250, 600);
+            vfx.SpawnPremium(pos, {cosf(angle) * speed, sinf(angle) * speed}, {0, 0}, 0.28f, 
+                             col, Fade(col, 0), (float)GetRandomValue(4, 9), 0.0f, 
+                             Graphics::RenderType::RHOMB, BLEND_ADDITIVE, Graphics::EasingType::EASE_OUT_EXPO,
+                             0.88f, 0.0f, (float)GetRandomValue(-200, 200));
         }
     }
 };

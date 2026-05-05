@@ -83,12 +83,14 @@ public:
   float poiseMax = 300.0f;
   float poiseRegenTimer = 0.0f;
 
-  virtual void ApplyBleed() {
-    if (desperationResists) return; // Inmune a DoT en fase final
-    isBleeding = true;
-    bleedTimer = 10.0f;
-    bleedTickTimer = 0.5f;
-    bleedTotalDamage = 16.0f; // Daño fijo por tick en lugar de % para evitar que se rompa con mucha vida
+  // ApplyBleed genérico (sin escalado). Para el Reaper usar ApplyBleedScaled().
+  // bleedTotalDamage = daño plano por tick (configurable externamente).
+  virtual void ApplyBleed(float flatDmgPerTick = 16.0f) {
+    if (desperationResists) return;
+    isBleeding      = true;
+    bleedTimer      = 10.0f;
+    bleedTickTimer  = 0.5f;
+    bleedTotalDamage = flatDmgPerTick;
   }
 
   virtual float GetRemainingBleedDamage() const {

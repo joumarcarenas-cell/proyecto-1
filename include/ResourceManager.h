@@ -55,25 +55,6 @@ struct ResourceManager {
   static Texture2D texVfxSplash;
   static Texture2D texVfxGlow;
 
-  // ─── Nuevos VFX Spritesheets ───────────────────────────────────────
-  // Fase 1: Ropera
-  static Texture2D vfxSlashLight;    // 48x48 Slash Part 5 (tajo leve)
-  static Texture2D vfxSlashHeavy;   // Free Part 1 128x128 (tajo pesado)
-  static Texture2D vfxWeaponHit;    // 10_weaponhit_spritesheet (chispa metalica)
-  // Fase 1: Perfect Dodge — Holy VFX
-  static Texture2D vfxHolyInitial;  // Holy VFX 01 Initial
-  static Texture2D vfxHolyLoop;     // Holy VFX 01 Repeatable
-  static Texture2D vfxHolyImpact;   // Holy VFX 01 Impact
-  // Fase 1: Mago
-  static Texture2D vfxMagicHit;     // 5_magickahit (impacto proyectil)
-  static Texture2D vfxVortex;       // 13_vortex (tornado)
-  static Texture2D vfxFreezing;     // 19_freezing (hielo)
-  // Fase 2: Segador
-  static Texture2D vfxPhantom;      // 14_phantom (Q fantasma)
-  static Texture2D vfxNebula;       // 12_nebula (aura oscura Ult)
-  // Fase 3: Boss
-  static Texture2D vfxFelspell;     // 17_felspell (ataques Ether Corrupto)
-
   static void Load();
   static void Unload();
 };

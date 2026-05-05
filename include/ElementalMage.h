@@ -22,6 +22,7 @@ struct MageProjectile {
     bool isKunai;
     bool isCrescent; 
     bool isLightning; // For lightning spears
+    int trailId = -1; 
 
     // Hit tracking for piercing
     void* hitEntities[16];
@@ -147,6 +148,7 @@ public:
     bool isOverloaded = false;
     float overloadTimer = 0.0f;
     float overloadAuraTimer = 0.0f;
+    float overloadVisualBoltTimer = 0.0f;
     
     // Contenedores
     std::vector<MageProjectile> projectiles;

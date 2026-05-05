@@ -29,8 +29,8 @@ void CharacterSelectScene::Init() {
   // El resto son slots de "PRÓXIMAMENTE" para expandir en el futuro.
   m_characters.clear();
   m_characters.push_back(
-      {"SEGADOR", "Maestro del sangrado", {180, 0, 255, 255}});
-  m_characters.push_back({"ROPERA", "Duelista veloz", {0, 220, 180, 255}});
+      {"SEGADOR", "Cosechador de almas", {180, 0, 255, 255}});
+  m_characters.push_back({"ROPERA", "REDISEÑANDO...", {0, 220, 180, 100}});
   m_characters.push_back({"MAGO", "Control elemental", {0, 180, 255, 255}});
   m_characters.push_back({"???", "Proximamente", {60, 60, 60, 180}});
   m_characters.push_back({"???", "Proximamente", {60, 60, 60, 180}});
@@ -61,6 +61,7 @@ void CharacterSelectScene::Update(float dt) {
 
   int hoveredIdx = CursorIndex();
   bool isValidSlot = (hoveredIdx < (int)m_characters.size() &&
+                      m_characters[hoveredIdx].subtitle != "REDISEÑANDO..." &&
                       m_characters[hoveredIdx].name != "???");
 
   // ── Confirmar selección (Enter o Click) ───────────────────────────────────
@@ -206,8 +207,9 @@ void CharacterSelectScene::Unload() { m_characters.clear(); }
 void CharacterSelectScene::DrawCharacterCard(int idx, float x, float y, float w,
                                              float h, bool isCursor,
                                              bool isSelected) const {
-  bool locked =
-      (idx >= (int)m_characters.size() || m_characters[idx].name == "???");
+  bool locked = (idx >= (int)m_characters.size() || 
+                 m_characters[idx].name == "???" || 
+                 m_characters[idx].subtitle == "REDISEÑANDO...");
 
   Color accent =
       locked ? Color{60, 60, 60, 180} : m_characters[idx].accentColor;

@@ -75,7 +75,7 @@ void GameplayScene::Init() {
       // Feedback visual global - Removed SpawnFlash
       AnimeVFX::PostProcessPipeline::Get().SpawnRipple(pos, 0.65f);
       hitstopTimer = 0.15f; // Breve pausa dramática
-      screenShake = fmaxf(screenShake, 3.0f);
+      screenShake = fmaxf(screenShake, 1.5f);
   };
   
   m_isVictory = false;
@@ -161,6 +161,11 @@ void GameplayScene::Update(float dt) {
     return;
   }
 
+  // ── Verificaciones de Estado Crítico (Antes de cualquier UI/Pausa) ────────
+  UpdateDeathCheck();
+  UpdateBossDeathReward();
+  UpdateBossRush(dt);
+
   // ── Menú de Nivel abierto: el mundo no avanza, solo se procesa el modal ──
   if (m_showLevelUpMenu) {
     ShowCursor();
@@ -192,6 +197,23 @@ void GameplayScene::Update(float dt) {
 
   if (IsKeyPressed(KEY_F4)) {
     m_showDebugHitboxes = !m_showDebugHitboxes;
+  }
+
+  // ── Configuración de Estadísticas (F9) ──────────────────────────────────
+  if (IsKeyPressed(KEY_F9)) {
+    m_showLevelUpMenu = !m_showLevelUpMenu;
+    if (m_showLevelUpMenu) {
+        ShowCursor();
+    } else {
+        if (!showCursorInGame) HideCursor();
+    }
+  }
+
+  // ── MODO ADMIN / GOD MODE (F8) ──────────────────────────────────────────
+  if (IsKeyPressed(KEY_F8)) {
+    if (m_activePlayer) {
+        m_activePlayer->isAdminMode = !m_activePlayer->isAdminMode;
+    }
   }
   if (m_versionTimer > 0) m_versionTimer -= dt;
   else if (m_showVersion) m_showVersion = false;
@@ -229,7 +251,7 @@ void GameplayScene::Update(float dt) {
   if (m_matchState == MatchState::INTRO) {
     m_stateTimer -= dt;
     m_bossIntroOffset = Lerp(m_bossIntroOffset, 0, 4.0f * dt);
-    screenShake = fmaxf(screenShake, 3.5f);
+    screenShake = fmaxf(screenShake, 1.2f);
     
     // Partículas de suelo/polvo
     if (m_boss && GetRandomValue(0, 100) < 60) {
@@ -284,7 +306,6 @@ void GameplayScene::Update(float dt) {
   }
 
   UpdateBleedDoT(dt);
-  UpdateBossRush(dt);
 
   for (auto *b : m_aliveBosses) {
     if (b && !b->isDead && !isTimeStopped && canCombat) {
@@ -385,12 +406,9 @@ void GameplayScene::Update(float dt) {
     }
   }
 
-  // ── Comprobación de fin de partida
-  // ──────────────────────────────────────────
-  UpdateDeathCheck();
-
-  // ── Paso B: Recompensa de muerte del Boss ──────────────────────────────
-  UpdateBossDeathReward();
+  // ── Comprobación de fin de partida (Movida al inicio de Update)
+  // UpdateDeathCheck();
+  // UpdateBossDeathReward();
 }
 
 // ─── Draw
@@ -440,12 +458,23 @@ void GameplayScene::UpdateBossRush(float dt) {
   // Esperar a que UpdateBossDeathReward haya procesado XP/stat points
   if (!m_bossXpAwarded) return;
 
-  // Mostrar "WAVE CLEAR" una sola vez (cuando el timer aun no ha bajado del dia)
-  if (m_waveTextTimer <= 0.0f && !m_isVictory) {
+  // Mostrar "WAVE CLEAR" (Solo si NO es la oleada final)
+  if (m_waveTextTimer <= 0.0f && !m_isVictory && m_currentWave < 3) {
     m_waveText     = TextFormat("OLEADA %d COMPLETADA", m_currentWave);
     m_waveSubText  = "PREPARATE...";
     m_waveTextIsStart = false;
     m_waveTextTimer = 3.0f;
+  }
+
+  // ── Victoria Inmediata (Final Wave 3) ───────────────────────────
+  if (m_currentWave == 3 && allDead) {
+      m_isVictory = true;
+      m_matchState = MatchState::MATCH_ENDED;
+      m_showLevelUpMenu = false;
+      m_waveTextTimer = 0.0f; // Cancelar cualquier banner de oleada
+      ShowCursor();
+      g_timeScale = 0.0f;
+      return;
   }
 
   // Countdown para el proximo spawn
@@ -488,20 +517,16 @@ void GameplayScene::UpdateBossRush(float dt) {
     m_waveSubText = "ETHER CORRUPTO DESPIERTA";
     m_waveTextIsStart = true;
 
-    screenShake = 5.0f;
+    screenShake = 2.0f;
     
     // Anuncio diferido via State Machine
     m_matchState = MatchState::INTRO;
     m_stateTimer = 2.5f;
     m_bossIntroOffset = 250.0f;
 
-  } else {
-    // Todas las oleadas completadas → Victoria
-    m_isVictory = true;
-    ShowCursor();
-    g_timeScale = 0.0f;
-    return;
   }
+  // Bloque 'else' removido porque la victoria ahora se maneja arriba de forma inmediata
+
 
   // ── Escalar dificultad y reiniciar estado ────────────────────────
   for (auto* b : m_aliveBosses) {
@@ -658,7 +683,7 @@ void GameplayScene::UpdateCollisions() {
                                  true});
       }
 
-      screenShake = fmaxf(screenShake, dmg * 0.008f + (isCrit ? 1.0f : 0.0f)); // Reducido (era 0.012 y 1.5)
+      screenShake = fmaxf(screenShake, dmg * 0.004f + (isCrit ? 0.35f : 0.0f)); 
       b->hitFlashTimer = 0.18f;
       if (isCrit) {
         hitstopTimer = 0.10f;
@@ -1258,9 +1283,11 @@ void GameplayScene::UpdateBossDeathReward() {
               m_activePlayer->maxHp);
   }
 
-  // ── Disparar el menú modal inmediatamente ────────────────────────────────
-  m_showLevelUpMenu = true;
-  ShowCursor();
+  // ── Disparar el menú modal (Solo si NO es la victoria final) ─────────────
+  if (!m_isVictory) {
+      m_showLevelUpMenu = true;
+      ShowCursor();
+  }
 }
 
 // ─── DrawLevelUpMenu (Paso C) ────────────────────────────────────────────────
@@ -1365,9 +1392,9 @@ void GameplayScene::DrawLevelUpMenu() {
     DrawText(rows[i].desc, (int)(PX + 220), (int)(ry + 12), 13,
              Fade(WHITE, 0.55f));
 
-    // Botón  +
     Rectangle btnPlus = {PX + PW - btnSize - 20, ry + 8, btnSize, btnSize};
-    bool canAdd = (rpg.puntosDisponibles > 0);
+    bool isCapReached = (*rows[i].stat >= rpg.STAT_MAX);
+    bool canAdd = (rpg.puntosDisponibles > 0 || m_activePlayer->isAdminMode) && !isCapReached;
     bool hoverPlus = CheckCollisionPointRec(mouse, btnPlus);
     Color btnCol = canAdd ? (hoverPlus ? Color{140, 80, 255, 255}
                                        : Color{80, 40, 160, 255})
@@ -1382,13 +1409,16 @@ void GameplayScene::DrawLevelUpMenu() {
         (int)(btnPlus.y + btnPlus.height / 2 - plusFs / 2), plusFs, WHITE);
 
     if (hoverPlus && canAdd && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-      rpg.SpendPoint(*rows[i].stat);
+      if (m_activePlayer->isAdminMode && rpg.puntosDisponibles <= 0) {
+          (*rows[i].stat)++;
+      } else {
+          rpg.SpendPoint(*rows[i].stat);
+      }
       // Aplicar bonus de HP / Energía en tiempo real
       m_activePlayer->maxHp = 200.0f + rpg.MaxHpBonus();
       m_activePlayer->maxEnergy = 100.0f + rpg.MaxEnergyBonus();
     }
 
-    // Botón  -  (solo si el stat tiene al menos 1 punto)
     Rectangle btnMinus = {PX + PW - btnSize * 2 - 28, ry + 8, btnSize, btnSize};
     bool canSub = (*rows[i].stat > 0);
     bool hoverMinus = CheckCollisionPointRec(mouse, btnMinus);
@@ -1406,7 +1436,15 @@ void GameplayScene::DrawLevelUpMenu() {
 
     if (hoverMinus && canSub && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
       (*rows[i].stat)--;
-      rpg.puntosDisponibles++;
+      // En modo admin no devolvemos puntos si no teniamos (para no "farmear" puntos)
+      if (!m_activePlayer->isAdminMode || rpg.puntosDisponibles < 0) {
+          // No hacemos nada especial aquí, solo dejamos que la lógica normal de puntos siga si es necesario
+          // Pero el usuario pidió "como quiera", así que permitimos bajar sin devolver si es admin
+          rpg.puntosDisponibles++; 
+      } else {
+          // Si es admin y ya tiene puntos o no le importa, simplemente devolvemos
+          rpg.puntosDisponibles++;
+      }
       // Revertir bonus de HP / Energía
       m_activePlayer->maxHp = 200.0f + rpg.MaxHpBonus();
       m_activePlayer->maxEnergy = 100.0f + rpg.MaxEnergyBonus();
@@ -1474,14 +1512,14 @@ void GameplayScene::DrawVictoryScreen() {
   const int SH = GetScreenHeight();
 
   // Fondo oscuro semitransparente que va apareciendo con el tiempo
-  float fadeIn  = fminf(m_victoryTimer / 1.2f, 1.0f);
+  float fadeIn  = fminf(m_victoryTimer / 0.65f, 1.0f);
   DrawRectangle(0, 0, SW, SH, Fade(BLACK, 0.82f * fadeIn));
 
   // Gradiente interior dorado/violeta (como halo de victoria)
   DrawCircleGradient(SW / 2, SH / 2, 500, Fade({180, 80, 255, 255}, 0.18f * fadeIn), {0,0,0,0});
 
   // Texto VICTORIA  (aparece slide-down)
-  float slide   = fmaxf(0.0f, 1.0f - expf(-m_victoryTimer * 3.5f));
+  float slide   = fmaxf(0.0f, 1.0f - expf(-m_victoryTimer * 5.0f));
   float textY   = -120.0f + slide * (SH * 0.28f + 120.0f);
 
   const char *mainTitle = "VICTORIA";
@@ -1503,8 +1541,8 @@ void GameplayScene::DrawVictoryScreen() {
   DrawRectangle(SW / 2 - 220, (int)(SH * 0.5f) - 1, 440, 2, Fade(GOLD, lineAlpha));
 
   // Estadística: Tiempo total
-  if (m_victoryTimer > 1.5f) {
-    float statFade = fminf((m_victoryTimer - 1.5f) / 0.8f, 1.0f);
+  if (m_victoryTimer > 0.8f) {
+    float statFade = fminf((m_victoryTimer - 0.8f) / 0.5f, 1.0f);
     int   totalSecs = (int)m_totalGameTime;
     int   minutes   = totalSecs / 60;
     int   seconds   = totalSecs % 60;
@@ -1514,10 +1552,10 @@ void GameplayScene::DrawVictoryScreen() {
              (int)(SH * 0.52f), timeFs, Fade(WHITE, statFade));
   }
 
-  // Instrucciones (aparecen después de 2 segundos)
-  if (m_victoryTimer > 2.0f) {
+  // Instrucciones (aparecen después de un segundo)
+  if (m_victoryTimer > 1.2f) {
     float pulse = 0.6f + 0.4f * sinf(m_victoryTimer * 3.0f);
-    float instrFade = fminf((m_victoryTimer - 2.0f) / 0.6f, 1.0f) * pulse;
+    float instrFade = fminf((m_victoryTimer - 1.2f) / 0.4f, 1.0f) * pulse;
     const char *restart = "[R] Reiniciar   /   [ESC] Menú Principal";
     DrawText(restart, SW / 2 - MeasureText(restart, 18) / 2,
              SH - 60, 18, Fade(LIGHTGRAY, instrFade));

@@ -65,6 +65,7 @@ void ElementalMage::Update() {
     HandleInput(dt);
     UpdateEntities(dt);
 
+
     // Clamping to Arena
     position = Arena::GetClampedPos(position, radius);
 
@@ -277,7 +278,8 @@ void ElementalMage::HandleInput(float dt) {
       isOverloaded = true;
       overloadTimer = 8.0f;
       overloadAuraTimer = 0.0f;
-      ultCooldown = 22.0f; // Mas corto
+      overloadVisualBoltTimer = 0.1f;
+      ultCooldown = 22.0f;
 
       // Explosión visual al sobrecargar
       Graphics::SpawnImpactBurst(position, {0, -1}, YELLOW, WHITE, 25, 12);
@@ -365,8 +367,23 @@ void ElementalMage::StartBasicAttack() {
     area.isHeavy = false;
     hitAreas.push_back(area);
 
-    // VFX Lightning
-    AnimeVFX::AnimeEmitter::SpawnLightning(position, clampedTarget, YELLOW);
+    // VFX Lightning (Definición mejorada con ramificación sutil)
+    AnimeVFX::AnimeEmitter::SpawnLightning(position, clampedTarget, YELLOW, 1.8f, 0, true);
+    
+    // Impacto detallado: Rombos + Destello central nítido
+    Graphics::VFXSystem::GetInstance().SpawnPremium(
+        clampedTarget, {0,0}, {0,0}, 0.15f, WHITE, Fade(YELLOW, 0), 15.0f, 0.0f,
+        Graphics::RenderType::SDF_CIRCLE, BLEND_ADDITIVE
+    );
+    
+    for (int i = 0; i < 4; i++) {
+        float a = (float)GetRandomValue(0, 360) * DEG2RAD;
+        float s = (float)GetRandomValue(200, 450);
+        Graphics::VFXSystem::GetInstance().SpawnPremium(
+            clampedTarget, {cosf(a) * s, sinf(a) * s}, {0,0}, 0.22f, WHITE, Fade(YELLOW, 0), 3.5f, 0.0f,
+            Graphics::RenderType::RHOMB, BLEND_ADDITIVE, Graphics::EasingType::EASE_OUT_EXPO
+        );
+    }
     AnimeVFX::AnimeEmitter::SpawnAnimeImpact(clampedTarget, YELLOW);
   }
 }
@@ -403,26 +420,36 @@ void ElementalMage::StartHeavyAttack() {
   } else {
     // Rayos procedurales del cielo
     int bolts = 6;
-    float spacing = 95.0f; // Un poco menor para que el rango total sea ~570-600
+    float spacing = 95.0f; 
     for (int i = 0; i < bolts; i++) {
       Vector2 boltPos =
           Vector2Add(position, Vector2Scale(facing, (i + 1) * spacing));
 
       VisualHitArea area;
       area.pos = boltPos;
-      area.radius = 80.0f;
+      area.radius = 80.0f; 
       area.lifeTimer = 0.3f;
       area.spawnDelay = i * 0.12f; // Procedural delay
       area.color = YELLOW;
       area.damageDealt = false;
       area.isHeavy = true; // Detona estática
-      area.damage = 70.0f * rpg.DamageMultiplierMagical(); // [BUFF] 48 -> 70
+      area.damage = 70.0f * rpg.DamageMultiplierMagical(); 
       hitAreas.push_back(area);
     }
   }
 }
 
 void ElementalMage::UpdateState(float dt) {
+  // --- Lógica MODO ADMIN ---
+  if (isAdminMode) {
+      hp = maxHp;
+      energy = maxEnergy;
+      qCooldown = 0;
+      eCooldown = 0;
+      ultCooldown = 0;
+      for (int i = 0; i < 3; i++) eChargesCooldowns[i] = 0;
+  }
+
   if (qCooldown > 0)
     qCooldown -= dt;
   if (eCooldown > 0)
@@ -446,6 +473,30 @@ void ElementalMage::UpdateState(float dt) {
   if (isOverloaded) {
     overloadTimer -= dt;
     overloadAuraTimer -= dt;
+    overloadVisualBoltTimer -= dt;
+
+    // Rayos ambientales aleatorios (Solo visuales - Estético)
+    if (overloadVisualBoltTimer <= 0.0f) {
+        // Posición aleatoria en un radio mayor
+        float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
+        float dist = (float)GetRandomValue(150, 450);
+        Vector2 boltPos = { position.x + cosf(ang) * dist, position.y + sinf(ang) * dist * 0.5f };
+
+        VisualHitArea bolt;
+        bolt.pos = boltPos;
+        bolt.radius = 100.0f;
+        bolt.lifeTimer = 0.4f; // Más tiempo visible
+        bolt.spawnDelay = 0.0f;
+        bolt.color = YELLOW;
+        bolt.damageDealt = true; 
+        bolt.damage = 0;
+        bolt.isHeavy = false;
+        hitAreas.push_back(bolt);
+
+        // Timer aleatorio más frecuente
+        overloadVisualBoltTimer = (float)GetRandomValue(1, 3) * 0.1f; // 0.1s a 0.3s
+    }
+
     if (overloadTimer <= 0)
       isOverloaded = false;
   }
@@ -633,28 +684,44 @@ void ElementalMage::UpdateEntities(float dt) {
       p.active = false;
 
     if (p.element == ElementMode::WATER_ICE) {
-        // Estela de burbujas/agua para el proyectil
-        if (GetRandomValue(0, 100) < 40) {
-            Graphics::VFXSystem::GetInstance().SpawnFull(
-                p.position, {0, (float)GetRandomValue(-20, 20)}, 0.4f, SKYBLUE, {200, 240, 255, 0},
-                (float)GetRandomValue(3, 5), Graphics::RenderType::CIRCLE, BLEND_ALPHA,
-                -20.0f, 0.95f, 0, 0, false
-            );
+        if (p.isCrescent) {
+            // Hielo HD (Cristales afilados) - Simplificado: menos partículas y sin estrellas
+            for (int i = 0; i < 1; i++) { // Reducido de 2 a 1
+                Vector2 off = {(float)GetRandomValue(-5, 5), (float)GetRandomValue(-5, 5)};
+                Graphics::VFXSystem::GetInstance().SpawnPremium(
+                    Vector2Add(p.position, off), {0, (float)GetRandomValue(50, 150)}, {0, 400}, 0.35f,
+                    WHITE, Fade(SKYBLUE, 0),
+                    (float)GetRandomValue(3, 5), 0.0f, Graphics::RenderType::RHOMB, BLEND_ADDITIVE,
+                    Graphics::EasingType::EASE_OUT_QUAD, 0.95f, 15.0f, (float)GetRandomValue(-200, 200)
+                );
+            }
+        } else {
+            // Agua: Reducido de 3 a 2 partículas
+            for (int i = 0; i < 2; i++) {
+                Vector2 off = {(float)GetRandomValue(-4, 4), (float)GetRandomValue(-4, 4)};
+                Graphics::VFXSystem::GetInstance().SpawnPremium(
+                    Vector2Add(p.position, off), {0, (float)GetRandomValue(-10, 10)}, {0, 200}, 0.22f,
+                    Fade(SKYBLUE, 0.8f), {SKYBLUE.r, SKYBLUE.g, SKYBLUE.b, 0},
+                    (float)GetRandomValue(3, 5), 0.0f, Graphics::RenderType::SDF_CIRCLE, BLEND_ALPHA,
+                    Graphics::EasingType::EASE_OUT_QUAD, 0.95f, 20.0f
+                );
+            }
         }
     } else if (p.isLightning) {
-        // Estela de partículas para el rayo móvil
+        // Esfera eléctrica caótica (tamaño reducido para más nitidez)
+        // Esfera eléctrica (Reducido de 4 a 2 y sin estrellas)
         for (int i = 0; i < 2; i++) {
-           Vector2 off = {(float)GetRandomValue(-10, 10), (float)GetRandomValue(-10, 10)};
-           Graphics::VFXSystem::GetInstance().SpawnFull(
-               Vector2Add(p.position, off), {0, 0}, 0.25f, YELLOW, {255,255,255,0},
-               (float)GetRandomValue(4, 7), Graphics::RenderType::RHOMB, BLEND_ADDITIVE,
-               0, 0.92f, (float)GetRandomValue(0,360), 0, false
+           Vector2 off = {(float)GetRandomValue(-8, 8), (float)GetRandomValue(-8, 8)};
+           Graphics::VFXSystem::GetInstance().SpawnPremium(
+               Vector2Add(p.position, off), {0, 0}, {0,0}, 0.18f, YELLOW, Fade(WHITE, 0),
+               (float)GetRandomValue(3, 5), 0.0f, Graphics::RenderType::RHOMB, BLEND_ADDITIVE,
+               Graphics::EasingType::EASE_OUT_QUAD, 0.92f, 120.0f, (float)GetRandomValue(-400, 400)
            );
         }
-        // Rayito procedural corto en la punta
-        if (GetRandomValue(0, 100) < 40) {
-            Vector2 tail = Vector2Subtract(p.position, Vector2Scale(p.direction, 60.0f));
-            AnimeVFX::AnimeEmitter::SpawnLightning(tail, p.position, YELLOW, 2.0f);
+        // Rayito procedural corto en la punta (Sin ramificaciones, más fino)
+        if (GetRandomValue(0, 100) < 30) {
+            Vector2 tail = Vector2Subtract(p.position, Vector2Scale(p.direction, 40.0f));
+            AnimeVFX::AnimeEmitter::SpawnLightning(tail, p.position, YELLOW, 1.2f, 0, false);
         }
     } else {
         // Otros elementos si los hubiera
@@ -671,20 +738,18 @@ void ElementalMage::UpdateEntities(float dt) {
         t.exploded = true;
       }
       
-      // [NEW] VORTEX VISUALS: Remolino de agua y hielo + spritesheet overlay
-      float angle = (float)GetTime() * 10.0f;
-      for (int i = 0; i < 3; i++) {
-          float a = angle + (i * 120.0f * DEG2RAD);
-          float dist = 40.0f + 60.0f * (1.0f - (t.durationTimer / 0.8f));
+      // [NEW] VORTEX VISUALS: Remolino de agua de alta definición (Isométrico puro)
+      // VORTEX VISUALS: Simplificado (Reducido de 4 a 2 por frame)
+      float angle = (float)GetTime() * 8.0f;
+      for (int i = 0; i < 2; i++) {
+          float a = angle + (i * 180.0f * DEG2RAD);
+          float dist = 35.0f + 45.0f * (1.0f - (t.durationTimer / 0.8f));
           Vector2 partPos = { t.position.x + cosf(a) * dist, t.position.y + sinf(a) * dist * 0.5f };
-          Graphics::VFXSystem::GetInstance().SpawnFull(
-              partPos, {0, -100.0f}, 0.4f, SKYBLUE, {255, 255, 255, 0},
-              (float)GetRandomValue(6, 12), Graphics::RenderType::RHOMB, BLEND_ALPHA
+          Graphics::VFXSystem::GetInstance().SpawnPremium(
+              partPos, {-cosf(a) * 80.0f, -sinf(a) * 40.0f}, {0, 0}, 0.3f, Fade(SKYBLUE, 0.8f), Fade(WHITE, 0),
+              (float)GetRandomValue(4, 7), 0.0f, Graphics::RenderType::SDF_CIRCLE, BLEND_ALPHA,
+              Graphics::EasingType::EASE_OUT_QUAD, 0.95f, 15.0f
           );
-      }
-      // Overlay vortex spritesheet (probabilístico, no cada frame)
-      if (GetRandomValue(0, 100) < 20) {
-          Graphics::SpawnVortexParticle(t.position);
       }
       
       if (GetRandomValue(0, 100) < 45) {
@@ -712,7 +777,8 @@ void ElementalMage::UpdateEntities(float dt) {
       if (ha.spawnDelay <= 0) {
         // VFX al aparecer
         if (ha.color.r > 200 && ha.color.g > 200) { // Lightning
-            AnimeVFX::AnimeEmitter::SpawnLightning(Vector2Add(ha.pos, {0, -600}), ha.pos, YELLOW);
+            // Rayos del cielo con ramificación sutil (5%)
+            AnimeVFX::AnimeEmitter::SpawnLightning(Vector2Add(ha.pos, {0, -700}), ha.pos, YELLOW, 4.0f, 0, true);
             AnimeVFX::AnimeEmitter::SpawnAnimeImpact(ha.pos, YELLOW);
         } else {
             Graphics::VFXSystem::GetInstance().SpawnParticleEx(ha.pos, {0, -500},
@@ -757,26 +823,18 @@ void ElementalMage::CheckCollisions(Boss &boss) {
       }
     }
     
-    // [NEW] Rayos procedimentales aleatorios durante el overload
-    if (GetRandomValue(0, 100) < 12) {
+    // Static Field Visual de alta definición (Simpleza)
+    // Static Field Visual: Reducida probabilidad y sin estrellas
+    if (GetRandomValue(0, 100) < 15) {
         float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
-        float dist = (float)GetRandomValue(50, 250);
-        Vector2 target = { position.x + cosf(ang) * dist, position.y + sinf(ang) * dist * 0.5f };
-        AnimeVFX::AnimeEmitter::SpawnLightning(Vector2Add(target, {0, -400}), target, YELLOW, 2.5f);
-        Graphics::SpawnImpactBurst(target, {0, -1}, YELLOW, WHITE, 4, 2);
-        screenShake = fmaxf(screenShake, 0.45f);
-    }
-    
-    // [NEW] Static Field Visual (Chispas de estática estilizadas)
-    if (GetRandomValue(0, 100) < 40) {
-        float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
-        float dist = (float)GetRandomValue(50, 240);
+        float dist = (float)GetRandomValue(40, 200);
         Vector2 pPos = { position.x + cosf(ang) * dist, position.y + sinf(ang) * dist * 0.5f };
         
-        Graphics::VFXSystem::GetInstance().SpawnFull(
-            pPos, {0, (float)GetRandomValue(-80, -30)}, 0.35f, 
-            Fade(YELLOW, 0.8f), {255, 255, 100, 0}, (float)GetRandomValue(3, 6), 
-            Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.94f, (float)GetRandomValue(0, 360), 150.0f, false
+        Graphics::VFXSystem::GetInstance().SpawnPremium(
+            pPos, {0, -30.0f}, {0, 0}, 0.25f, 
+            WHITE, Fade(YELLOW, 0), (float)GetRandomValue(3, 6), 0.0f, 
+            Graphics::RenderType::RHOMB, BLEND_ADDITIVE, Graphics::EasingType::EASE_OUT_QUAD,
+            0.9f, 15.0f, (float)GetRandomValue(-150, 150)
         );
     }
   }
@@ -799,21 +857,12 @@ void ElementalMage::CheckCollisions(Boss &boss) {
       if (p.isCrescent && isPerfectCounter) {
           energy = fminf(maxEnergy, energy + 30.0f);
           isPerfectCounter = false;
-          Graphics::SpawnHolyCounterVFX(position);
-          Graphics::SpawnHolyImpactVFX(boss.position);
+          Graphics::SpawnImpactBurst(position, {0, -1}, GetHUDColor(), WHITE, 15, 6);
           finalDmg *= 1.5f;
       }
       
       boss.TakeDamage(finalDmg, 3.0f, {0, 0});
       boss.ApplyElement(p.element);
-
-      // VFX: impacto mágico en el punto de contacto
-      Color hitTint = (p.element == ElementMode::LIGHTNING) ? YELLOW : SKYBLUE;
-      Graphics::SpawnMagicHitVFX(boss.position, hitTint);
-      // Si es crescent de hielo, añadir congelación
-      if (p.isCrescent) {
-          Graphics::SpawnFreezeVFX(boss.position);
-      }
 
       // Otorgar carga si el ataque está disponible
       if (p.isKunai || p.element == ElementMode::LIGHTNING) {
@@ -888,20 +937,20 @@ void ElementalMage::CheckCollisions(Boss &boss) {
           staticStackUltAvailable = false;
         }
 
-        // [NEW] VFX de ICEBERG (Explosión masiva con física)
-        Graphics::SpawnFreezeVFX(t.position);  // Congelación spritesheet
+        // [NEW] VFX de ICEBERG/Explosion de Agua HD
         Graphics::SpawnWaterRipple(t.position, 280.0f, SKYBLUE);
         Graphics::SpawnWaterRipple(t.position, 320.0f, WHITE);
         
-        for (int i = 0; i < 18; i++) {
+        for (int i = 0; i < 20; i++) {
           float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
-          float spd = (float)GetRandomValue(350, 850);
-          Graphics::VFXSystem::GetInstance().SpawnFull(
-              t.position, {cosf(ang) * spd, sinf(ang) * spd},
-              0.8f + (float)GetRandomValue(0, 4) * 0.1f,
-              WHITE, {200, 220, 255, 0}, (float)GetRandomValue(10, 25), 
-              Graphics::RenderType::RHOMB, BLEND_ALPHA,
-              500.0f, 0.94f, (float)GetRandomValue(0, 360), (float)GetRandomValue(-300, 300), true
+          float spd = (float)GetRandomValue(400, 900);
+          // Físicas planas isométricas (sin caída, frenado por fricción en el suelo XY)
+          Graphics::VFXSystem::GetInstance().SpawnPremium(
+              t.position, {cosf(ang) * spd, sinf(ang) * spd * 0.5f}, {0, 0}, 
+              0.6f + (float)GetRandomValue(0, 4) * 0.1f,
+              WHITE, Fade(SKYBLUE, 0), (float)GetRandomValue(8, 20), 0.0f, 
+              Graphics::RenderType::SDF_CIRCLE, BLEND_ALPHA,
+              Graphics::EasingType::EASE_OUT_QUAD, 0.88f, 60.0f, (float)GetRandomValue(-150, 150), false
           );
         }
         Graphics::SpawnImpactBurst(boss.position, {0, -1}, SKYBLUE, WHITE, 35, 12);
@@ -941,8 +990,7 @@ void ElementalMage::CheckCollisions(Boss &boss) {
       if (ha.isHeavy && isPerfectCounter) {
           energy = fminf(maxEnergy, energy + 30.0f);
           isPerfectCounter = false;
-          Graphics::SpawnHolyCounterVFX(position);
-          Graphics::SpawnHolyImpactVFX(boss.position);
+          Graphics::SpawnImpactBurst(position, {0, -1}, GetHUDColor(), WHITE, 15, 6);
           finalDmg *= 1.5f;
       }
 
@@ -987,16 +1035,18 @@ void ElementalMage::Draw() {
   if (hasPerfectDodgeBuff) {
     float t = (float)GetTime();
     float pulse = 0.5f + 0.5f * sinf(t * 15.0f);
-    DrawCircleLinesV({position.x, position.y - 20}, radius + 6.0f + 6.0f * pulse, Fade(GOLD, 0.8f));
+    float pulseRadius = radius + 6.0f + 6.0f * pulse;
+    DrawEllipseLines((int)position.x, (int)position.y - 20, pulseRadius, pulseRadius * 0.5f, Fade(GOLD, 0.8f));
+    // No hay EllipseGradient en Raylib, un circulo difuso leve debajo sirve igual
     DrawCircleGradient((int)position.x, (int)position.y - 20, radius * 3.5f,
-                        Fade(GOLD, 0.4f * pulse), Fade(GOLD, 0));
+                        Fade(GOLD, 0.2f * pulse), Fade(GOLD, 0));
   }
 
   // --- Indicador de dirección (Hades-style 8-way) ---
   Vector2 snapped = Directions::GetSnappedVector(facing);
   
-  // Anillo de base
-  DrawCircleLines((int)position.x, (int)position.y - 20, radius + 5, Fade(mag, 0.3f));
+  // Anillo de base (Isométrico)
+  DrawEllipseLines((int)position.x, (int)position.y - 20, radius + 5, (radius + 5) * 0.5f, Fade(mag, 0.3f));
   
   // Puntero 8-way
   Vector2 pointerPos = Vector2Add({position.x, position.y - 20}, Vector2Scale(snapped, radius + 11.0f));
@@ -1005,42 +1055,71 @@ void ElementalMage::Draw() {
   DrawCircleV({position.x, position.y - 20}, radius, mag);
   DrawCircleLines((int)position.x, (int)position.y - 20, radius, GREEN);
 
-  for (auto &p : projectiles) {
+    for (auto &p : projectiles) {
     if (p.active) {
       if (p.isCrescent) {
-        // Dibujar Media Luna (Crescent Moon)
+        // Dibujar Media Luna (Crescent Moon) Isométrica
         float baseAngle = atan2f(p.direction.y, p.direction.x) * RAD2DEG;
-        Color cInner = Fade(mag, 0.8f);
-        Color cOuter = mag;
+        Color cInner = Fade(WHITE, 0.9f);
+        Color cOuter = Fade(SKYBLUE, 0.7f);
         
-        DrawRing(p.position, 28.0f, 48.0f, baseAngle - 70.0f, baseAngle + 70.0f, 32, cOuter);
-        DrawRing(p.position, 16.0f, 28.0f, baseAngle - 55.0f, baseAngle + 55.0f, 24, cInner);
-        DrawCircleV(p.position, 18.0f, Fade(WHITE, 0.5f));
+        rlPushMatrix();
+        rlTranslatef(p.position.x, p.position.y, 0.0f);
+        rlScalef(1.0f, 0.5f, 1.0f); // Perspectiva Isométrica
+        DrawRing({0,0}, 28.0f, 48.0f, baseAngle - 70.0f, baseAngle + 70.0f, 32, cOuter);
+        DrawRing({0,0}, 16.0f, 28.0f, baseAngle - 55.0f, baseAngle + 55.0f, 24, cInner);
+        rlPopMatrix();
         
-        // Chispas de la media luna
-        if (GetRandomValue(0,100) < 20) {
-            Graphics::VFXSystem::GetInstance().SpawnFull(
-                p.position, Vector2Scale(p.direction, -150.0f), 0.3f, WHITE, mag, 4.0f, 
-                Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0.0f, 0.9f, (float)GetRandomValue(0,360), 10.0f, false
+        // Chispas de la media luna (Cristales de hielo finos - Rombos)
+        if (GetRandomValue(0,100) < 25) {
+            Graphics::VFXSystem::GetInstance().SpawnPremium(
+                p.position, Vector2Scale(p.direction, -150.0f), {0, 300}, 0.3f, WHITE, Fade(SKYBLUE, 0), 3.0f, 0.0f, 
+                Graphics::RenderType::RHOMB, BLEND_ADDITIVE, Graphics::EasingType::EASE_OUT_QUAD, 0.95f, 15.0f, (float)GetRandomValue(-300, 300)
             );
         }
       } else if (p.isLightning) {
-         // Rayo estilizado para el proyectil
-         Vector2 tail = Vector2Subtract(p.position, Vector2Scale(p.direction, 50.0f));
-         DrawLineEx(tail, p.position, 6.0f, WHITE);
-         DrawCircleV(p.position, 10.0f, YELLOW);
-         DrawCircleV(p.position, 6.0f, WHITE);
+          if (p.piercing) {
+              // Lanza de Zeus (E Cargada Super) - Estética High-Def
+              // 1. Punta Refinada con Geometría doble (Focus principal)
+              rlPushMatrix();
+              rlTranslatef(p.position.x, p.position.y, 0);
+              float angle = atan2f(p.direction.y, p.direction.x) * RAD2DEG;
+              rlRotatef(angle, 0, 0, 1);
+              
+              DrawPoly({0,0}, 4, 18.0f, 0, Fade(YELLOW, 0.4f)); // Resplandor punta aumentado
+              DrawPoly({0,0}, 4, 11.0f, 0, WHITE);             // Núcleo punta
+              DrawPolyLinesEx({0,0}, 4, 12.0f, 0, 2.0f, YELLOW);
+              rlPopMatrix();
+              
+              // 2. Estela de "Partículas Pequeñas" (Nítidas y frecuentes)
+              // Generamos rastro granulado en lugar de una línea sólida
+              for (int i = 0; i < 4; i++) {
+                  float distOff = (float)GetRandomValue(0, 80);
+                  Vector2 pPos = Vector2Subtract(p.position, Vector2Scale(p.direction, distOff));
+                  float sideOff = (float)GetRandomValue(-6, 6);
+                  pPos = Vector2Add(pPos, Vector2Scale({-p.direction.y, p.direction.x}, sideOff));
+                  
+                  Graphics::VFXSystem::GetInstance().SpawnPremium(
+                      pPos, Vector2Scale(p.direction, -40.0f), {0,0}, 0.2f, YELLOW, Fade(WHITE, 0), 
+                      (float)GetRandomValue(1, 3), 0.0f, 
+                      Graphics::RenderType::RHOMB, BLEND_ADDITIVE, Graphics::EasingType::EASE_OUT_QUAD, 0.95f, 6.0f
+                  );
+              }
+          }
       } else {
-        DrawCircleV(p.position, (p.isKunai) ? 8.0f : 12.0f, mag);
+         // Agua básica: Dejar que el sistema SDF metaball haga el trabajo. 
+         // Opcionalmente podemos dibujar un brillo tenue:
+         DrawCircleGradient((int)p.position.x, (int)p.position.y, (p.isKunai) ? 14.0f : 20.0f, Fade(mag, 0.5f), Fade(mag, 0.0f));
       }
     }
   }
 
   for (auto &t : tornados) {
     if (t.active && !t.exploded) {
-      DrawCircleLines(t.position.x, t.position.y, t.pullRadius,
-                      Fade(SKYBLUE, 0.5f));
-      DrawCircle(t.position.x, t.position.y, 25.0f, SKYBLUE);
+      // Vórtice isométrico (radios Y son la mitad de X)
+      DrawEllipseLines(t.position.x, t.position.y, t.pullRadius, t.pullRadius * 0.5f, Fade(SKYBLUE, 0.5f));
+      DrawEllipseLines(t.position.x, t.position.y, t.pullRadius * 0.8f, t.pullRadius * 0.4f, Fade(SKYBLUE, 0.3f));
+      DrawEllipse(t.position.x, t.position.y, 25.0f, 12.5f, Fade(SKYBLUE, 0.6f));
     }
   }
 
@@ -1052,11 +1131,9 @@ void ElementalMage::Draw() {
   for (auto &ha : hitAreas) {
     if (ha.spawnDelay > 0)
       continue;
-    DrawCircleLines(ha.pos.x, ha.pos.y, ha.radius,
-                    Fade(ha.color, ha.lifeTimer / 0.2f));
-    // Draw bolt visual
-    DrawLineEx({ha.pos.x, ha.pos.y - 400}, ha.pos,
-               10.0f * (ha.lifeTimer / 0.2f), WHITE);
+    DrawEllipseLines((int)ha.pos.x, (int)ha.pos.y, ha.radius, ha.radius * 0.5f,
+                     Fade(ha.color, ha.lifeTimer / 0.2f));
+    // Eliminado el "DrawLineEx" rígido porque ahora AnimeEmitter genera un rayo ramificado SDF procedimental
   }
 
   if (state == MageState::DASHING) {
@@ -1069,8 +1146,9 @@ void ElementalMage::Draw() {
       float chargePct = fminf(eHoldTimer / 0.6f, 1.0f);
       Color chargeCol = (chargePct >= 1.0f && GetAvailableECharges() >= 3) ? WHITE : YELLOW;
       
-      // Aura pulsante
-      DrawCircleLines((int)position.x, (int)position.y - 20, radius + 5.0f + (10.0f * (1.0f - chargePct)), Fade(chargeCol, 0.6f * chargePct));
+      // Aura pulsante Isométrica
+      float currentRad = radius + 5.0f + (10.0f * (1.0f - chargePct));
+      DrawEllipseLines((int)position.x, (int)position.y - 20, currentRad, currentRad * 0.5f, Fade(chargeCol, 0.6f * chargePct));
       
       // Partículas internas (Rombos estilizados "Anime Juice")
       if (GetRandomValue(0, 100) < 30) {
@@ -1085,15 +1163,15 @@ void ElementalMage::Draw() {
       // Flash si está listo para el Super
       if (chargePct >= 1.0f && GetAvailableECharges() >= 3) {
           if (((int)(g_gameTime * 20) % 2) == 0) {
-               DrawCircleLines((int)position.x, (int)position.y - 20, radius + 15.0f, WHITE);
-               DrawCircleLines((int)position.x, (int)position.y - 20, radius + 18.0f, YELLOW);
+               DrawEllipseLines((int)position.x, (int)position.y - 20, radius + 15.0f, (radius + 15.0f) * 0.5f, WHITE);
+               DrawEllipseLines((int)position.x, (int)position.y - 20, radius + 18.0f, (radius + 18.0f) * 0.5f, YELLOW);
           }
       }
   }
 
   if (isOverloaded) {
-    // Círculo mucho más tenue para no cegar al jugador (User feedback)
-    DrawCircleLines(position.x, position.y, 250.0f, Fade(YELLOW, 0.12f));
+    // Círculo mucho más tenue para no cegar al jugador (Isométrico)
+    DrawEllipseLines((int)position.x, (int)position.y, 250.0f, 125.0f, Fade(YELLOW, 0.12f));
   }
 }
 
@@ -1151,3 +1229,4 @@ std::vector<AbilityInfo> ElementalMage::GetAbilities() const {
 
   return abs;
 }
+

@@ -1,1293 +1,454 @@
-// =====================================================
-// Reaper.cpp - Implementacion del Personaje Segador
-// =====================================================
+#include "include/Reaper.h"
+#include "include/Boss.h"
 #include "include/graphics/VFXSystem.h"
 #include "include/graphics/AnimeVFX.h"
-#include "include/Reaper.h"
-#include "include/CommonTypes.h"
-#include "include/boss.h"
-#include "include/ResourceManager.h"
 #include "include/CombatUtils.h"
-#include "rlgl.h"
 #include <cmath>
-#include <string>
+#include <algorithm>
+extern float screenShake;
+extern float hitstopTimer;
 
-// ─── Arcos de Ataque (Helpers Visuales para el Segador) ──────────────
-struct SweepParams { float startOffset; float totalDeg; float dir; };
-static SweepParams GetSweepParams(int step) {
-  switch (step) {
-    case 0: return { -90.0f, 180.0f, +1.0f }; // izq -> der (CCW)
-    case 1: return { +90.0f, 180.0f, -1.0f }; // der -> izq (CW)
-    default: return {   0.0f, 360.0f, +1.0f }; // spin completo
-  }
+// Draw isometric arc sector
+static void DrawIsoSector(Vector2 c,float r,float a1,float a2,Color col){
+    int N=24; float step=(a2-a1)/N;
+    for(int i=0;i<N;i++){
+        float f1=(a1+i*step)*DEG2RAD, f2=(a1+(i+1)*step)*DEG2RAD;
+        Vector2 v1={c.x+cosf(f1)*r, c.y+sinf(f1)*r*0.5f};
+        Vector2 v2={c.x+cosf(f2)*r, c.y+sinf(f2)*r*0.5f};
+        DrawTriangle(c,v1,v2,col); DrawTriangle(c,v2,v1,col);
+        DrawLineEx(v1,v2,2.f,Fade(WHITE,col.a/255.f));
+    }
 }
 
-// =====================================================
-// REAPER - UPDATE
-// =====================================================
-void Reaper::Update() {
-  if (hp <= 0) {
-      velocity = {0, 0};
-      return;
-  }
-  float dt = GetFrameTime() * g_timeScale;
+// Scythe shape
+static void DrawScythe(Vector2 p,float a,float sz,Color c){
+    Vector2 tip={p.x+cosf(a)*sz, p.y+sinf(a)*sz};
+    Vector2 l={p.x+cosf(a+2.4f)*sz*.7f, p.y+sinf(a+2.4f)*sz*.7f};
+    Vector2 r2={p.x+cosf(a-2.4f)*sz*.7f, p.y+sinf(a-2.4f)*sz*.7f};
+    DrawTriangle(p,l,tip,c); DrawTriangle(p,tip,r2,c);
+    DrawTriangle(p,tip,l,c); DrawTriangle(p,r2,tip,c);
+    DrawLineEx(tip,l,2.5f,WHITE); DrawLineEx(tip,r2,2.5f,WHITE);
+}
 
-  if (energy < maxEnergy)
-    energy += 4.0f * dt;
-
-  if (isStaggered) {
-      staggerTimer -= dt;
-      if (staggerTimer <= 0.0f) isStaggered = false;
-      
-      velocity = Vector2Scale(velocity, 0.85f); 
-      Vector2 np = Vector2Add(position, Vector2Scale(velocity, dt));
-      position = Arena::GetClampedPos(np, radius);
-  }
-
-  // --- Cooldowns y Updates globales ---
-  if (hitFlashTimer > 0) hitFlashTimer -= dt;
-  UpdateDash(dt);
-
-  if (isStaggered) return;
-  if (qCooldown > 0)
-    qCooldown -= dt;
-  if (eCooldown > 0)
-    eCooldown -= dt;
-  if (ultCooldown > 0)
-    ultCooldown -= dt;
-  if (attackBufferTimer > 0)
-    attackBufferTimer -= dt;
-
-  // --- Buff timer (Fase 3 Ult) ---
-  if (buffTimer > 0) {
-    buffTimer -= dt;
-    isBuffed = true;
-  } else {
-    isBuffed = false;
-  }
-
-  float attackMult = (isBuffed ? 0.65f : 1.0f);
-
-  // =====================================================
-  // UPDATE: Ground Bursts (Q) – cadena secuencial
-  // =====================================================
-  if (qActive) {
-    qBurstTimer -= dt;
-    if (qBurstTimer <= 0.0f && qBurstsSpawned < 5) {
-      // Spawner del siguiente estallido
-      bool isTip = (qBurstsSpawned == 4);
-      float burstRadius = isTip ? 140.0f : 100.0f; 
-      float burstDmg = isTip ? 38.0f : 25.0f; // Daño ajustado para mayor impacto
-
-      // Posicion: avanza 75px por estallido (antes 55px) para mayor alcance y claridad
-      float dist = (qBurstsSpawned + 1) * 75.0f; 
-      GroundBurst &gb = groundBursts[qBurstsSpawned];
-      gb.position = Vector2Add(qBurstOrigin, Vector2Scale(qBurstDir, dist));
-      gb.direction = qBurstDir;
-      gb.radius = burstRadius;
-      gb.visualRadius = burstRadius;
-      gb.lifetime = 0.45f; // Mas corto y rapido (era 0.55)
-      gb.maxLifetime = 0.45f;
-      gb.active = true;
-      gb.hasDealtDamage = false;
-      gb.isTip = isTip;
-      gb.damage = burstDmg;
-
-      qBurstsSpawned++;
-      qBurstTimer = (qBurstsSpawned < 5) ? 0.06f : 0.0f; // Mas rapido (era 0.1)
-      
-      // [NEW] Particulas de Impacto (Tierra + Sangre + Almas)
-      for (int k = 0; k < 12; k++) {
-          Vector2 pVel = {(float)GetRandomValue(-200, 200), (float)GetRandomValue(-400, -100)};
-          Color pCol = (GetRandomValue(0, 10) < 4) ? Color{100, 60, 40, 255} : (GetRandomValue(0, 10) < 7 ? RED : Color{180, 0, 255, 255});
-          Graphics::VFXSystem::GetInstance().SpawnFull(
-              gb.position, pVel, 0.6f, pCol, Fade(pCol, 0), (float)GetRandomValue(3, 6),
-              Graphics::RenderType::RHOMB, BLEND_ALPHA, 500.0f, 0.95f, (float)GetRandomValue(0, 360), 0, true
-          );
-      }
-      // VFX: Slash fantasma en cada estallido del suelo
-      Graphics::SpawnPhantomSlashVFX(gb.position, qBurstDir, qBurstsSpawned % 2);
+// VFX: slash burst
+static void VfxSlash(Vector2 pos,Vector2 dir,Color col){
+    auto& V=Graphics::VFXSystem::GetInstance();
+    float base=atan2f(dir.y,dir.x);
+    for(int i=0;i<12;i++){
+        float a=base+GetRandomValue(-60,60)*DEG2RAD, s=(float)GetRandomValue(350,800);
+        V.SpawnPremium(pos,{cosf(a)*s,sinf(a)*s},{0,0},0.25f,col,Fade(WHITE,0),(float)GetRandomValue(4,10),0,Graphics::RenderType::RHOMB,BLEND_ADDITIVE,Graphics::EasingType::EASE_OUT_EXPO);
     }
-    if (qBurstsSpawned >= 5)
-      qActive = false;
-  }
+    AnimeVFX::AnimeEmitter::SpawnAnimeImpact(Vector2Add(pos,Vector2Scale(dir,35.f)),{100,0,150,255});
+}
 
-  // Update de cada burst activo
-  for (int i = 0; i < 5; i++)
-    groundBursts[i].Update(dt);
-
-  // =====================================================
-  // UPDATE: Sombras de la Ultimate
-  // =====================================================
-  for (int i = 0; i < 2; i++) {
-    if (ultShadows[i].active) {
-      ultShadows[i].lifetime -= dt;
-      ultShadows[i].position = Vector2Add(
-          ultShadows[i].position, Vector2Scale(ultShadows[i].velocity, dt));
-      if (ultShadows[i].lifetime <= 0)
-        ultShadows[i].active = false;
+// VFX: heavy slash
+static void VfxHeavy(Vector2 pos,Vector2 dir){
+    auto& V=Graphics::VFXSystem::GetInstance();
+    for(int i=0;i<20;i++){
+        float a=atan2f(dir.y,dir.x)+GetRandomValue(-45,45)*DEG2RAD, s=(float)GetRandomValue(400,1100);
+        V.SpawnPremium(pos,{cosf(a)*s,sinf(a)*s-600},{0,900},0.45f,{180,0,255,255},Fade(WHITE,0),(float)GetRandomValue(7,16),0,Graphics::RenderType::SDF_CIRCLE,BLEND_ADDITIVE,Graphics::EasingType::EASE_OUT_EXPO);
     }
-  }
+    AnimeVFX::AnimeEmitter::SpawnAnimeImpact(pos,{80,0,120,255});
+}
 
-  // =====================================================
-  // MAQUINA DE ESTADOS
-  // =====================================================
-
-  // --- INPUT LOCK durante la Ult (fases 1 y 2) ---
-  bool inputLocked = (ultSeqPhase == 1 || ultSeqPhase == 2);
-
-  // --- CC Timers ---
-  if (stunTimer > 0)
-    stunTimer -= dt;
-  if (slowTimer > 0)
-    slowTimer -= dt;
-
-  switch (state) {
-
-  // ─── NORMAL ──────────────────────────────────────────
-  case ReaperState::NORMAL: {
-    if (!inputLocked && stunTimer <= 0) {
-      float currentSpeed = (isBuffed ? 620.0f : 420.0f); // Ajustado a 420 (era 460)
-      if (slowTimer > 0)
-        currentSpeed *= 0.5f;
-
-      Vector2 move = {0, 0};
-      if (IsKeyDown(KEY_W))
-        move.y -= 1;
-      if (IsKeyDown(KEY_S))
-        move.y += 1;
-      if (IsKeyDown(KEY_A))
-        move.x -= 1;
-      if (IsKeyDown(KEY_D))
-        move.x += 1;
-
-      // Ralentizar durante la carga del heavy
-      if (isCharging && holdTimer > 0)
-        currentSpeed *= 0.20f; // Souls commitment
-
-      if (Vector2Length(move) > 0) {
-        move = Vector2Normalize(move);
-        Vector2 nextPos =
-            Vector2Add(position, Vector2Scale(move, currentSpeed * dt));
-        position = Arena::GetClampedPos(nextPos, radius);
-      }
-
-      if (state == ReaperState::NORMAL) {
-        // Facing hacia el mouse solo fuera de ataques
-        Vector2 aimDiff = Vector2Subtract(targetAim, position);
-        if (Vector2Length(aimDiff) > 0)
-          facing = Vector2Normalize(aimDiff);
-      }
-
-      // --- Lógica de Ataque (Combo vs Cargado Auto) ---
-      if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
-        holdTimer += dt;
-        isCharging = true;
-
-        // --- Perfect Dodge Reward: Instant Heavy ---
-        if (hasPerfectDodgeBuff && isCharging) {
-             hasPerfectDodgeBuff = false; // Consumir buff
-             Vector2 aim = Vector2Subtract(targetAim, position);
-             if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
-             
-             velocity = Vector2Scale(facing, 1800.0f); // Súper velocidad
-             miniDashTimer = 0.22f;
-             heavyHasHit = false;
-             isPerfectCounter = true; // Marcar como contraataque
-             state = ReaperState::CHARGING_HEAVY;
-             isCharging = false;
-             holdTimer = 0;
-             
-             // Flash + Holy VFX en el jugador
-             hitFlashTimer = 0.3f;
-             Graphics::SpawnHolyCounterVFX(position);
-        }
-
-        if (holdTimer >= 0.35f && isCharging) {
-          // Ataque cargado: mini-dash + heavy attack
-          Vector2 aim = Vector2Subtract(targetAim, position);
-          if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
-          
-          velocity = Vector2Scale(facing, 1500.0f);
-          miniDashTimer = 0.20f;
-          heavyHasHit = false;
-          state = ReaperState::CHARGING_HEAVY;
-
-          isCharging = false;
-          holdTimer = 0;
-        }
-      }
-
-      // --- Release Click: combo rápido ---
-      if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
-        if (isCharging) {
-          state = ReaperState::ATTACKING;
-          hasHit = false;
-          attackPhase = AttackPhase::STARTUP;
-          attackPhaseTimer = combo[comboStep].startup * attackMult;
-          comboTimer = 1.2f;
-
-          Vector2 aim = Vector2Subtract(targetAim, position);
-          if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
-        }
-        holdTimer = 0.0f;
-        isCharging = false;
-      }
-
-      // --- Dash (Blink) ---
-      if (IsKeyPressed(controls.dash) && CanDash()) {
-        Vector2 blinkDir = facing;
-        {
-          Vector2 move2 = {0, 0};
-          if (IsKeyDown(KEY_W))
-            move2.y -= 1;
-          if (IsKeyDown(KEY_S))
-            move2.y += 1;
-          if (IsKeyDown(KEY_A))
-            move2.x -= 1;
-          if (IsKeyDown(KEY_D))
-            move2.x += 1;
-          if (Vector2Length(move2) > 0)
-            blinkDir = Vector2Normalize(move2);
-        }
-
-        // --- VFX: Imagen residual en el punto de origen ---
-        Graphics::VFXSystem::GetInstance().SpawnGhost(position, {0, 0, 70, 70}, 0.50f, Fade({200, 0, 255, 255}, 0.7f), (facing.x > 0), 1.0f, {35, 35}, ResourceManager::texPlayer);
-        
-        // Particulas de salida (Explosion de sombras)
-        for (int k = 0; k < 15; k++) {
-            float ang = (float)GetRandomValue(0, 360) * DEG2RAD;
-            float spd = (float)GetRandomValue(200, 500);
-            Graphics::VFXSystem::GetInstance().SpawnFull(
-                position, {cosf(ang) * spd, sinf(ang) * spd}, 0.4f,
-                {60, 0, 80, 255}, {0,0,0,0}, (float)GetRandomValue(4, 8),
-                Graphics::RenderType::RHOMB, BLEND_ADDITIVE
-            );
-        }
-        
-        Vector2 newPos =
-            Vector2Add(position, Vector2Scale(blinkDir, blinkDistance));
-        position = Arena::GetClampedPos(newPos, radius);
-        state = ReaperState::DASHING;
-        blinkGraceTimer = 0.18f; // Nueva duración reducida para mayor fluidez
-        UseDash();
-
-        // Particulas de entrada (Reaparicion espectral)
-        for (int k = 0; k < 8; k++)
-             Graphics::VFXSystem::GetInstance().SpawnParticleEx(position, {(float)GetRandomValue(-200, 200), (float)GetRandomValue(-200, 200)}, 0.25f, WHITE, 4.0f);
-      }
-
-      // --- Habilidad Q: Ground Bursts secuenciales ---
-      if (IsKeyPressed(controls.boomerang) && qCooldown <= 0 &&
-          energy >= 18.0f) {
-        energy -= 18.0f;
-        qCooldown = 6.6f; // Reduced CD (~10%)
-        StartGroundBurstChain();
-      }
-
-      // --- Habilidad E: Orbes Teledirigidos ---
-      if (IsKeyPressed(controls.berserker) && eCooldown <= 0 &&
-          energy >= 20.0f) {
-        state = ReaperState::CASTING_E;
-        energy -= 20.0f;
-        eCooldown = 5.0f; // Buffed CD
-      }
-
-      // --- Ultimate ---
-      if (IsKeyPressed(controls.ultimate) && ultCooldown <= 0 &&
-          energy >= 58.0f && ultSeqPhase == 0) {
-        energy -= 58.0f;
-        // Señal para HandleSkills
-        ultSeqPhase = -1;
-      }
+// VFX: blood thorn spikes ascending (E explosion)
+static void VfxBloodThorns(Vector2 pos){
+    auto& V=Graphics::VFXSystem::GetInstance();
+    // Ring of thorns shooting upward
+    for(int i=0;i<16;i++){
+        float a=(float)i/16.f*PI*2.f;
+        float r=(float)GetRandomValue(30,180);
+        Vector2 sp={pos.x+cosf(a)*r, pos.y+sinf(a)*r*0.5f};
+        // Main spike shooting up
+        V.SpawnPremium(sp,{cosf(a)*80.f,-600.f+sinf(a)*50.f},{0,1200},0.55f,{220,0,40,255},{60,0,10,0},
+            (float)GetRandomValue(10,22),(float)GetRandomValue(2,6),
+            Graphics::RenderType::RHOMB,BLEND_ADDITIVE,Graphics::EasingType::EASE_OUT_EXPO,
+            0.9f,0.f,(float)GetRandomValue(-30,30));
+        // Blood drops
+        V.SpawnPremium(sp,{cosf(a)*200.f+(float)GetRandomValue(-80,80),(float)GetRandomValue(-400,-100)},{0,600},0.4f,
+            {180,0,20,200},{40,0,5,0},(float)GetRandomValue(4,9),0,
+            Graphics::RenderType::SDF_CIRCLE,BLEND_ALPHA,Graphics::EasingType::EASE_OUT_QUAD);
     }
-    break;
-  }
+    // No SonicBoom - just the blood impact burst
+    Graphics::SpawnImpactBurst(pos,{0,1},{200,0,50,255},{60,0,10,255},20,10);
+    screenShake=1.2f;
+}
 
-  // ─── ATTACKING (Combo de 3 hits) ─────────────────────
-  case ReaperState::ATTACKING: {
-    // Direccion bloqueada al inicio del golpe (User request)
+// VFX: blood pool on floor
+static void DrawBloodPool(Vector2 pos,float alpha){
+    DrawEllipse((int)pos.x,(int)pos.y,32,16,Fade({130,0,20,200},alpha));
+    DrawEllipseLines((int)pos.x,(int)pos.y,32,16,Fade({200,0,40,255},alpha));
+}
 
-    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-      attackBufferTimer = BUFFER_WINDOW; // Guardar pulsacion en el buffer
+void Reaper::ApplyBleed(Boss& boss) const {
+    if(boss.desperationResists) return;
+    boss.isBleeding=true; boss.bleedTimer=10.f;
+    boss.bleedTickTimer=0.5f; boss.bleedTotalDamage=8.f+rpg.statFuerza*1.5f;
+}
+
+void Reaper::StartDashAttack(Vector2 targetPos,bool isUlt){
+    dashAtk.active=true; dashAtk.isUltimate=isUlt;
+    dashAtk.start=position; dashAtk.end=targetPos;
+    dashAtk.duration=isUlt?0.28f:0.32f;
+    dashAtk.timer=0.f; dashAtk.slashTimer=0.f; dashAtk.hitEnemy=false;
+    // Boom on cast
+    Graphics::SpawnSonicBoom(position,isUlt?160.f:100.f);
+    if(isUlt) screenShake=0.4f;
+}
+
+void Reaper::Update(){
+    float dt=GetFrameTime()*g_timeScale;
+    if(isAdminMode){qCooldown=eCooldown=ultCooldown=0;energy=maxEnergy;hp=maxHp;dashCharges=maxDashCharges;}
+    else{if(qCooldown>0)qCooldown-=dt;if(eCooldown>0)eCooldown-=dt;if(ultCooldown>0)ultCooldown-=dt;}
+    if(hitCooldownTimer>0)hitCooldownTimer-=dt;
+    if(isStaggered){staggerTimer-=dt;if(staggerTimer<=0)isStaggered=false;return;}
+
+    // E stun
+    if(eStunTimer>0){
+        eStunTimer-=dt;
+        // VFX: thorns growing while charging (spines appear during stun)
+        if(GetRandomValue(0,100)<50){
+            float a=(float)GetRandomValue(0,360)*DEG2RAD;
+            float r=(float)GetRandomValue(20,160);
+            Vector2 sp={position.x+cosf(a)*r, position.y+sinf(a)*r*0.5f};
+            Graphics::VFXSystem::GetInstance().SpawnPremium(sp,{cosf(a)*30.f,-400.f},{0,800},0.4f,
+                {200,0,30,255},{50,0,5,0},GetRandomValue(6,14),GetRandomValue(1,4),
+                Graphics::RenderType::RHOMB,BLEND_ADDITIVE,Graphics::EasingType::EASE_OUT_EXPO);
+        }
+        if(eStunTimer<=0){state=ReaperState::NORMAL;eExplosionReady=true;VfxBloodThorns(position);}
+        return;
     }
 
-    attackPhaseTimer -= dt;
-    if (hitCooldownTimer > 0)
-      hitCooldownTimer -= dt;
+    // DashAttack (Q/R)
+    if(dashAtk.active){
+        dashAtk.timer+=dt;
+        float p=dashAtk.timer/dashAtk.duration;
+        if(p>=1.f){p=1.f;dashAtk.active=false;}
+        position=Arena::GetClampedPos(Vector2Lerp(dashAtk.start,dashAtk.end,p),radius);
+        facing=Vector2Normalize(Vector2Subtract(dashAtk.end,dashAtk.start));
 
-    if (attackPhaseTimer <= 0) {
-      switch (attackPhase) {
-      case AttackPhase::STARTUP:
-        attackPhase = AttackPhase::ATTACK_ACTIVE;
-        attackPhaseTimer = combo[comboStep].active * attackMult;
-        velocity = Vector2Add(velocity, Vector2Scale(facing, 126.0f));
-        hitCooldownTimer = 0.0f;
-        attackId++;
-        break;
-      case AttackPhase::ATTACK_ACTIVE:
-        // [NEW] Estelas de Tinta (Ink Trails) - Básicos
-        if (GetRandomValue(0, 100) < 70) {
-            float activeT = combo[comboStep].active * attackMult;
-            float progress = CombatUtils::GetProgress(attackPhaseTimer, activeT);
-            float range = combo[comboStep].range;
-            float facingAngle = atan2f(facing.y * 2.0f, facing.x);
-            SweepParams sp = GetSweepParams(comboStep);
-            float currentA = (facingAngle * RAD2DEG + sp.startOffset + sp.dir * sp.totalDeg * (1.0f - progress)) * DEG2RAD;
-            
-            Vector2 tipPos = { position.x + cosf(currentA) * range, position.y + sinf(currentA) * range * 0.5f };
-            Graphics::VFXSystem::GetInstance().SpawnFull(
-                tipPos, {0, 0}, 0.45f, {40, 0, 80, 255}, {0, 0, 0, 0}, (float)GetRandomValue(8, 14),
-                Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.92f, (float)GetRandomValue(0, 360), 250.0f
-            );
+        // Slash echo every 0.05s
+        dashAtk.slashTimer+=dt;
+        if(dashAtk.slashTimer>=0.05f){
+            dashAtk.slashTimer=0.f;
+            Color ec=dashAtk.isUltimate?Color{255,30,50,200}:Color{160,0,255,200};
+            // Spawn echo at current pos
+            echoes.push_back({position,facing,0.3f,0.3f,ec});
+            VfxSlash(position,facing,ec);
         }
+        // Trail particles
+        auto& V=Graphics::VFXSystem::GetInstance();
+        Color tc=dashAtk.isUltimate?Color{255,20,40,180}:Color{140,0,255,180};
+        V.SpawnPremium(position,{0,0},{0,0},0.18f,tc,Fade(tc,0),20.f,0.f,
+            Graphics::RenderType::RHOMB,BLEND_ADDITIVE);
+    }
 
-        if (attackPhaseTimer <= 0) {
-            attackPhase = AttackPhase::RECOVERY;
-            attackPhaseTimer = combo[comboStep].recovery * attackMult;
+    // Scythes (combos 3 & 4)
+    for(auto& s:scythes){
+        if(!s.active)continue;
+        s.progress+=(s.isReturning?1.6f:2.4f)*dt;
+        if(s.progress>=1.f){s.active=false;continue;}
+        if(s.isReturning){
+            Vector2 side={-facing.y,facing.x};
+            s.position=Vector2Add(Vector2Lerp(s.startPos,position,s.progress),Vector2Scale(side,sinf(s.progress*PI)*140.f));
+        }else{
+            s.position=Vector2Lerp(s.startPos,s.targetPos,s.progress);
         }
-        break;
-      case AttackPhase::RECOVERY:
-        comboStep = (comboStep + 1) % 3;
-        if (attackBufferTimer > 0.0f) {
-          attackBufferTimer = 0.0f;
-          attackPhase = AttackPhase::STARTUP;
-          attackPhaseTimer = combo[comboStep].startup * attackMult;
-          comboTimer = 1.2f;
-          hasHit = false;
+        s.angle+=38.f*dt;
+        Graphics::VFXSystem::GetInstance().SpawnPremium(s.position,{0,0},{0,0},0.13f,{255,0,80,180},{100,0,40,0},22.f,0.f,
+            Graphics::RenderType::RHOMB,BLEND_ADDITIVE,Graphics::EasingType::LINEAR,1.f,0,s.angle*RAD2DEG);
+    }
 
-          Vector2 aim = Vector2Subtract(targetAim, position);
-          if (Vector2Length(aim) > 0) facing = Vector2Normalize(aim);
-        } else {
-          state = ReaperState::NORMAL;
-          attackPhase = AttackPhase::NONE;
-          hasHit = false;
+    // Blood leaves (R)
+    for(auto& l:leaves){
+        if(!l.active)continue;
+        l.position=Vector2Add(l.position,Vector2Scale(l.velocity,dt));
+        float ang=atan2f(l.velocity.y,l.velocity.x)*RAD2DEG;
+        Graphics::VFXSystem::GetInstance().SpawnPremium(l.position,{0,0},{0,0},0.15f,{200,0,40,200},{50,0,10,0},
+            10.f,3.f,Graphics::RenderType::RHOMB,BLEND_ADDITIVE,Graphics::EasingType::LINEAR,1.f,0,ang);
+    }
+
+    // Echoes lifetime
+    for(auto& e:echoes)e.lifetime-=dt;
+    echoes.erase(std::remove_if(echoes.begin(),echoes.end(),[](const SlashEcho&e){return e.lifetime<=0;}),echoes.end());
+
+    for(auto& pool:pools)if(pool.lifetime>0)pool.lifetime-=dt;
+
+    // Attack phases
+    if(state==ReaperState::ATTACKING||state==ReaperState::HEAVY_ATTACK){
+        attackPhaseTimer-=dt;
+        if(attackPhaseTimer<=0){
+            if(state==ReaperState::HEAVY_ATTACK){
+                if(attackPhase==AttackPhase::STARTUP){attackPhase=AttackPhase::ATTACK_ACTIVE;attackPhaseTimer=0.2f;hasHit=false;VfxHeavy(position,facing);screenShake=0.3f;}
+                else if(attackPhase==AttackPhase::ATTACK_ACTIVE){attackPhase=AttackPhase::RECOVERY;attackPhaseTimer=0.25f;}
+                else CancelAttack();
+            }else{
+                float AT[4]={0.12f,0.12f,0.25f,0.45f},RT[4]={0.15f,0.15f,0.10f,0.25f};
+                int step=comboStep>0?comboStep-1:0;
+                if(attackPhase==AttackPhase::STARTUP){
+                    attackPhase=AttackPhase::ATTACK_ACTIVE;attackPhaseTimer=AT[step];hasHit=false;
+                    if(step==0||step==1){VfxSlash(position,facing,{160,0,255,200});}
+                    else if(step==2){scythes.push_back({position,position,Vector2Add(position,Vector2Scale(facing,420.f)),0.f,false,true,0.f,32.f*rpg.DamageMultiplierMagical()});Graphics::SpawnSonicBoom(position,100.f);}
+                    else{scythes.push_back({position,Vector2Add(position,Vector2Scale(facing,460.f)),position,0.f,true,true,0.f,38.f*rpg.DamageMultiplierMagical()});Graphics::SpawnSonicBoom(position,150.f);}
+                }else if(attackPhase==AttackPhase::ATTACK_ACTIVE){attackPhase=AttackPhase::RECOVERY;attackPhaseTimer=RT[step];}
+                else CancelAttack();
+            }
         }
-        break;
-      default:
-        break;
-      }
     }
-    // Cancelar con dash
-    if (IsKeyPressed(controls.dash) && CanDash()) {
-      Vector2 newPos =
-          Vector2Add(position, Vector2Scale(facing, blinkDistance));
-      position = Arena::GetClampedPos(newPos, radius);
-      state = ReaperState::DASHING;
-      attackPhase = AttackPhase::NONE;
-      UseDash();
-      // Spawn ghost for dash cancel
-      Graphics::VFXSystem::GetInstance().SpawnGhost(position, {0, 0, (float)radius * 2, (float)radius * 2}, 0.35f, Fade(GetHUDColor(), 0.5f), false, 1.0f, {radius, radius}, ResourceManager::texPlayer);
-    }
-    break;
-  }
 
-  // ─── CHARGING_HEAVY (Mini-Dash + Tajo Frontal) ───────
-  case ReaperState::CHARGING_HEAVY: {
-    miniDashTimer -= dt;
-    if (miniDashTimer > 0) {
-      Vector2 nextPos = Vector2Add(position, Vector2Scale(velocity, dt));
-      position = Arena::GetClampedPos(nextPos, radius);
-      velocity = Vector2Scale(velocity, 0.82f);
-    } else {
-      state = ReaperState::HEAVY_ATTACK;
-      attackPhase = AttackPhase::STARTUP;
-      attackPhaseTimer = 0.08f;
-      velocity = {0, 0};
-      heavyHasHit = false;
+    if (state == ReaperState::NORMAL && comboStep > 0) {
+        comboTimer -= dt;
+        if (comboTimer <= 0) comboStep = 0;
     }
-    break;
-  }
 
-  // ─── HEAVY_ATTACK (Tajo Frontal Cargado) ─────────────
-  case ReaperState::HEAVY_ATTACK: {
-    attackPhaseTimer -= dt;
-    if (attackPhaseTimer <= 0) {
-      switch (attackPhase) {
-      case AttackPhase::STARTUP:
-        attackPhase = AttackPhase::ATTACK_ACTIVE;
-        attackPhaseTimer = 0.20f;
-        attackId++;
-        break;
-      case AttackPhase::ATTACK_ACTIVE:
-        // [NEW] Estelas de Tinta (Ink Trails) - Heavy
-        if (GetRandomValue(0, 100) < 80) {
-            float progress = CombatUtils::GetProgress(attackPhaseTimer, 0.20f) * 1.4f;
-            if (progress > 1.0f) progress = 1.0f;
-            float facingAngle = atan2f(facing.y * 2.0f, facing.x);
-            float currentA = (facingAngle * RAD2DEG - 40.0f + 80.0f * progress) * DEG2RAD;
-            
-            Vector2 tipPos = { position.x + cosf(currentA) * 200.0f, position.y + sinf(currentA) * 100.0f };
-            Graphics::VFXSystem::GetInstance().SpawnFull(
-                tipPos, {0, -50}, 0.5f, {50, 0, 100, 255}, {0, 0, 0, 0}, (float)GetRandomValue(10, 16),
-                Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.92f, (float)GetRandomValue(0, 360), 300.0f
-            );
+    // Heavy charge - track independently of canAct to avoid mid-charge cancel
+    if (IsMouseButtonDown(MOUSE_RIGHT_BUTTON) && !dashAtk.active && eStunTimer <= 0 && state != ReaperState::DASHING) {
+        isChargingHeavy = true;
+        heavyHoldTimer += dt;
+        if (GetRandomValue(0, 100) < 25) {
+            Vector2 off = {(float)GetRandomValue(-90,90), (float)GetRandomValue(-90,90)};
+            Graphics::VFXSystem::GetInstance().SpawnPremium(
+                Vector2Add(position, off),
+                Vector2Scale(Vector2Normalize(Vector2Negate(off)), 180.f),
+                {0,0}, 0.18f, {200,100,255,200}, Fade(WHITE,0), 5.f, 0.f,
+                Graphics::RenderType::RHOMB, BLEND_ADDITIVE);
         }
-
-        if (attackPhaseTimer <= 0) {
-            attackPhase = AttackPhase::RECOVERY;
-            attackPhaseTimer = 0.45f;
+    } else if (isChargingHeavy) {
+        if (heavyHoldTimer >= 0.2f && (energy >= 10.f || isAdminMode)) {
+            if (!isAdminMode) energy -= 10.f;
+            state = ReaperState::HEAVY_ATTACK;
+            attackPhase = AttackPhase::STARTUP;
+            attackPhaseTimer = 0.18f;
+            hasHit = false;
         }
-        break;
-      case AttackPhase::RECOVERY:
-        state = ReaperState::NORMAL;
-        attackPhase = AttackPhase::NONE;
-        break;
-      default:
-        break;
-      }
+        isChargingHeavy = false;
+        heavyHoldTimer = 0.f;
     }
-    break;
-  }
 
-  // ─── DASHING (Blink – i-frames breves) ───────────────
-  case ReaperState::DASHING: {
-    blinkGraceTimer -= dt;
-    if (blinkGraceTimer <= 0.0f) {
-      state = ReaperState::NORMAL;
-    }
-    // Permitir input de movimiento amortiguado durante los i-frames
-    float currentSpeed = (isBuffed ? 400.0f : 300.0f); 
-    Vector2 move = {0, 0};
-    if (IsKeyDown(KEY_W)) move.y -= 1;
-    if (IsKeyDown(KEY_S)) move.y += 1;
-    if (IsKeyDown(KEY_A)) move.x -= 1;
-    if (IsKeyDown(KEY_D)) move.x += 1;
-    if (Vector2Length(move) > 0) {
-        move = Vector2Normalize(move);
-        position = Vector2Add(position, Vector2Scale(move, currentSpeed * dt));
-        position = Arena::GetClampedPos(position, radius);
-    }
-    break;
-  }
+    bool canAct = (state == ReaperState::NORMAL || attackPhase == AttackPhase::RECOVERY)
+                  && !dashAtk.active && eStunTimer <= 0 && !isChargingHeavy;
 
-  // ─── CASTING_E (Orbes Teledirigidos) ─────────────────
-  case ReaperState::CASTING_E: {
-    state = ReaperState::NORMAL;
-    break;
-  }
-
-  // ─── LOCKED (Time Stop + Sombras + Tajo Final — input locked) ─
-  case ReaperState::LOCKED: {
-    velocity = {0, 0}; // Input lock total
-
-    if (ultSeqPhase == 1) { // Fase de Sombras
-      ultSeqTimer -= dt;
-      if (ultSeqTimer <= 0) {
-        ultSeqPhase = 2;
-        attackPhase = AttackPhase::STARTUP;
-        attackPhaseTimer = 0.20f; // Startup breve cinematico
-        ultFinalSlash = true;
-        ultFinalSlashHit = false;
-        attackId++;
-      }
-    } else if (ultSeqPhase == 2) { // Fase de Tajo Final Automático
-        // [NEW] Estelas de Tinta (Ink Trails) - Ultra Heavy
-        if (GetRandomValue(0, 100) < 85) {
-            float progress = CombatUtils::GetProgress(attackPhaseTimer, 0.25f) * 1.4f;
-            if (progress > 1.0f) progress = 1.0f;
-            float facingAngle = atan2f(facing.y * 2.0f, facing.x);
-            float currentA = (facingAngle * RAD2DEG - 100.0f + 200.0f * progress) * DEG2RAD;
-            
-            Vector2 tipPos = { position.x + cosf(currentA) * 253.0f, position.y + sinf(currentA) * 126.0f };
-            Graphics::VFXSystem::GetInstance().SpawnFull(
-                tipPos, {0, 0}, 0.6f, {0, 180, 255, 255}, {0, 0, 0, 0}, (float)GetRandomValue(12, 20),
-                Graphics::RenderType::RHOMB, BLEND_ADDITIVE, 0, 0.92f, (float)GetRandomValue(0, 360), 400.0f
-            );
-        }
-        // VFX: Nebulosa oscura durante el tajo final de la Ult
-        if (GetRandomValue(0, 100) < 40) {
-            Graphics::SpawnNebulaAura(position);
-        }
-
-        attackPhaseTimer -= dt;
-      if (attackPhaseTimer <= 0) {
-        switch (attackPhase) {
-        case AttackPhase::STARTUP:
-          attackPhase = AttackPhase::ATTACK_ACTIVE;
-          attackPhaseTimer = 0.25f;
-          break;
-        case AttackPhase::ATTACK_ACTIVE:
-          attackPhase = AttackPhase::RECOVERY;
-          attackPhaseTimer = 0.50f;
-          break;
-        case AttackPhase::RECOVERY:
-          isTimeStopped = false;
-          ultSeqPhase = 3; // Buff
-          buffTimer = 6.0f;
-          ultCooldown = 20.5f; // Reduced CD (~10%)
-          state = ReaperState::ULT_PHASE3;
-          attackPhase = AttackPhase::NONE;
-          ultFinalSlash = false;
-          break;
-        default:
-          break;
-        }
-      }
-    }
-    break;
-  }
-
-  // ─── ULT_PHASE3 (Buff activo – movimiento libre) ─────
-  case ReaperState::ULT_PHASE3: {
-    if (buffTimer <= 0) {
-      state = ReaperState::NORMAL;
-      isBuffed = false;
-      ultSeqPhase = 0;
-    }
-    // Movimiento libre durante el buff
-    {
-      float currentSpeed = 560.0f; // Buffed speed
-      Vector2 move = {0, 0};
-      if (IsKeyDown(KEY_W))
-        move.y -= 1;
-      if (IsKeyDown(KEY_S))
-        move.y += 1;
-      if (IsKeyDown(KEY_A))
-        move.x -= 1;
-      if (IsKeyDown(KEY_D))
-        move.x += 1;
-      if (Vector2Length(move) > 0) {
-        move = Vector2Normalize(move);
-        Vector2 nextPos =
-            Vector2Add(position, Vector2Scale(move, currentSpeed * dt));
-        position = Arena::GetClampedPos(nextPos, radius);
-      }
-      Vector2 aimDiff = Vector2Subtract(targetAim, position);
-      if (Vector2Length(aimDiff) > 0)
-        facing = Vector2Normalize(aimDiff);
-      // Habilidades basicas disponibles durante el buff
-      if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && canAct) {
+        // Increment BEFORE starting attack so step index is correct
+        if (comboStep >= 4) comboStep = 0;
+        comboStep++; // step 1-4; used as comboStep-1 as index
         state = ReaperState::ATTACKING;
-        hasHit = false;
         attackPhase = AttackPhase::STARTUP;
-        attackPhaseTimer =
-            combo[comboStep].startup * 0.65f; // attackMult buffed
-        comboTimer = 1.2f;
-      }
-      if (IsKeyPressed(controls.dash) && CanDash()) {
-        Vector2 blinkDir = (Vector2Length(move) > 0) ? move : facing;
-        Vector2 newPos =
-            Vector2Add(position, Vector2Scale(blinkDir, blinkDistance));
-        position = Arena::GetClampedPos(newPos, radius);
-        state = ReaperState::DASHING;
+        attackPhaseTimer = 0.1f;
+        comboTimer = 0.55f;
+        hasHit = false;
+    }
+
+    if (IsKeyPressed(controls.dash) && CanDash() && canAct) {
         UseDash();
-      }
+        state = ReaperState::DASHING;
+        attackPhaseTimer = 0.42f;
+        hitstopTimer = 0.f;
+        Vector2 mv = {0,0};
+        if (IsKeyDown(KEY_W)) mv.y -= 1;
+        if (IsKeyDown(KEY_S)) mv.y += 1;
+        if (IsKeyDown(KEY_A)) mv.x -= 1;
+        if (IsKeyDown(KEY_D)) mv.x += 1;
+        if (Vector2Length(mv) == 0) mv = facing;
+        velocity = Vector2Scale(Vector2Normalize(mv), 860.f);
     }
-    break;
-  }
-  } // end switch
-
-  // --- Friccion general (excepto Input Lock) ---
-  if (!inputLocked)
-    velocity = Vector2Scale(velocity, 0.88f);
-
-  // --- Fisica base (excepto Input Lock) ---
-  if (!inputLocked) {
-    Vector2 nextPhysPos = Vector2Add(position, Vector2Scale(velocity, dt));
-    position = Arena::GetClampedPos(nextPhysPos, radius);
-  }
-
-  // --- Combo timer reset ---
-  if (state != ReaperState::ATTACKING && comboTimer > 0) {
-    comboTimer -= dt;
-    if (comboTimer <= 0)
-      comboStep = 0;
-  }
-
-  // =====================================================
-  // UPDATE: Proyectiles activos (Homing orbs / sombras)
-  // =====================================================
-  for (int i = (int)activeProjectiles.size() - 1; i >= 0; i--) {
-    Projectile &p = activeProjectiles[i];
-    if (!p.active) {
-      activeProjectiles.erase(activeProjectiles.begin() + i);
-      continue;
+    if(state==ReaperState::DASHING){
+        attackPhaseTimer-=dt;velocity=Vector2Scale(velocity,0.93f);
+        position=Arena::GetClampedPos(Vector2Add(position,Vector2Scale(velocity,dt)),radius);
+        // Ghost trail: same style as other characters
+        Graphics::VFXSystem::GetInstance().SpawnGhost(position,{0,0,40,40},0.2f,Fade({180,0,255,255},0.3f),facing.x>0,1.f,{20,20},ResourceManager::texPlayer);
+        if(attackPhaseTimer<=0)state=ReaperState::NORMAL;
+    } else if (!dashAtk.active && eStunTimer <= 0 && attackPhase == AttackPhase::NONE && !isChargingHeavy) {
+        Vector2 mv = {0,0};
+        if (IsKeyDown(KEY_W)) mv.y -= 1;
+        if (IsKeyDown(KEY_S)) mv.y += 1;
+        if (IsKeyDown(KEY_A)) mv.x -= 1;
+        if (IsKeyDown(KEY_D)) mv.x += 1;
+        if (Vector2Length(mv) > 0)
+            position = Arena::GetClampedPos(Vector2Add(position, Vector2Scale(Vector2Normalize(mv), 370.f * dt)), radius);
     }
 
-    // Trail
-    for (int j = 7; j > 0; j--) {
-      p.trail[j] = p.trail[j - 1];
+    if(!dashAtk.active){
+        Vector2 aim=Vector2Subtract(targetAim,position);
+        if(Vector2Length(aim)>0)facing=Vector2Normalize(aim);
     }
-    p.trail[0] = p.position;
-    if (p.trailCount < 8)
-      p.trailCount++;
-
-    if (p.isShadow || p.isHoming) {
-      p.position =
-          Vector2Add(p.position, Vector2Scale(p.direction, p.speed * dt));
-      if (Vector2Distance(p.startPos, p.position) > p.maxDistance)
-        p.active = false;
-    }
-  }
+    energy+=(!isAdminMode?8.f:50.f)*dt;if(energy>maxEnergy)energy=maxEnergy;
 }
 
-void Reaper::Reset(Vector2 pos) {
-  position = pos;
-  hp = maxHp;
-  energy = 100.0f;
-  velocity = {0, 0};
-  activeProjectiles.clear();
-  state = ReaperState::NORMAL;
-  ultSeqPhase = 0;
-  ultCooldown = 0.0f;
-  buffTimer = 0.0f;
-  isBuffed = false;
-  qCooldown = 0.0f;
-  dashCharges = maxDashCharges;
-  dashCooldown1 = 0.0f;
-  dashCooldown2 = 0.0f;
-  eCooldown = 0.0f;
-  comboStep = 0;
-  hasHit = false;
-  isPerfectCounter = false;
-  prevReaperState = ReaperState::NORMAL;
+void Reaper::Draw(){
+    // Blood pools
+    for(const auto& p:pools)if(p.lifetime>0)DrawBloodPool(p.position,fminf(1.f,p.lifetime/30.f));
+
+    // Echoes from dash slashes (ghost imprint on ground)
+    for(const auto& e:echoes){
+        float t=e.lifetime/e.maxLifetime;
+        float ang=atan2f(e.dir.y*2.f,e.dir.x)*RAD2DEG;
+        DrawIsoSector(e.position,130.f*t,ang-60.f,ang+60.f,Fade(e.color,t*0.6f));
+    }
+
+    // Scythe projectiles
+    for(const auto& s:scythes)if(s.active){
+        DrawScythe(s.position,s.angle,42.f,{255,30,80,255});
+        DrawEllipseLines((int)s.position.x,(int)s.position.y,38,19,Fade(RED,0.7f));
+    }
+
+    // Blood leaves (aletas de tiburon)
+    for(const auto& l:leaves)if(l.active){
+        float ang=atan2f(l.velocity.y,l.velocity.x);
+        Vector2 tip={l.position.x+cosf(ang)*24.f,l.position.y+sinf(ang)*24.f};
+        Vector2 lp={l.position.x+cosf(ang+2.5f)*14.f,l.position.y+sinf(ang+2.5f)*14.f};
+        Vector2 rp={l.position.x+cosf(ang-2.5f)*14.f,l.position.y+sinf(ang-2.5f)*14.f};
+        DrawTriangle(l.position,lp,tip,{200,0,40,255});
+        DrawTriangle(l.position,tip,rp,{200,0,40,255});
+        DrawTriangle(l.position,tip,lp,{200,0,40,255});
+        DrawTriangle(l.position,rp,tip,{200,0,40,255});
+        DrawLineEx(tip,lp,2.f,WHITE);DrawLineEx(tip,rp,2.f,WHITE);
+        DrawCircleLines((int)l.position.x,(int)l.position.y,11.f,Fade(RED,0.75f));
+    }
+
+    // Player body
+    DrawCircleV({position.x,position.y-22},radius,hitFlashTimer>0?WHITE:color);
+    DrawCircleLines(position.x,position.y-22,radius+2,{220,100,255,255});
+    DrawCircleV(Vector2Add({position.x,position.y-22},Vector2Scale(facing,radius+8)),4,GOLD);
+
+    // Hitboxes for combos 1 & 2
+    if(state==ReaperState::ATTACKING&&attackPhase==AttackPhase::ATTACK_ACTIVE){
+        int step=comboStep>0?comboStep-1:0;
+        if(step==0||step==1){
+            float p=fmaxf(0.01f,1.f-(attackPhaseTimer/0.12f));
+            float ang=atan2f(facing.y*2.f,facing.x)*RAD2DEG;
+            float sv=step==0?-70.f:70.f, sw=step==0?140.f:-140.f;
+            DrawIsoSector(position,140.f,ang+sv,ang+sv+sw*p,Fade(RED,0.45f));
+            DrawIsoSector(position,140.f*p,ang+sv,ang+sv+sw*p,Fade(WHITE,0.7f));
+        }
+    }
+    // Heavy hitbox
+    if(state==ReaperState::HEAVY_ATTACK&&attackPhase==AttackPhase::ATTACK_ACTIVE){
+        float p=fmaxf(0.01f,1.f-(attackPhaseTimer/0.20f));
+        float ang=atan2f(facing.y*2.f,facing.x)*RAD2DEG;
+        DrawIsoSector(position,130.f,ang-70.f,ang-70.f+140.f*p,Fade({255,0,50,255},0.55f));
+    }
+    // DashAttack hitbox ring
+    if(dashAtk.active){
+        DrawEllipseLines((int)position.x,(int)position.y,160,80,Fade(RED,0.8f));
+        DrawEllipse((int)position.x,(int)position.y,160,80,Fade(RED,0.12f));
+    }
 }
 
-void Reaper::HandleSkills(Boss &boss) {
-  float dt = GetFrameTime() * g_timeScale;
-  // --- Detectar señal de Ult (ultSeqPhase == -1 → ActivateUltimate) ---
-  if (ultSeqPhase == -1) {
-    ActivateUltimate(boss.position);
-    // Efecto de entrada
-    for (int si = 0; si < 20; si++) {
-      Graphics::VFXSystem::GetInstance().SpawnParticle(
-          position,
-          {(float)GetRandomValue(-350, 350), (float)GetRandomValue(-350, 350)},
-          0.9f, {0, 200, 255, 255});
-    }
-  }
-
-  // --- Detectar entrada en CASTING_E para lanzar orbes ---
-  if (prevReaperState != state) {
-    if (state == ReaperState::CASTING_E) {
-      LaunchHomingOrbs(boss);
-    }
-    prevReaperState = state;
-  }
-
-  // --- Homing: mover orbes hacia el boss ---
-  for (auto &p : activeProjectiles) {
-    if (p.active && p.isHoming && !boss.isDead && !boss.IsInvulnerable() && boss.isBleeding) {
-      Vector2 toEnemy = Vector2Subtract(boss.position, p.position);
-      if (Vector2Length(toEnemy) > 1.0f) {
-        Vector2 desired = Vector2Normalize(toEnemy);
-        p.direction.x += (desired.x - p.direction.x) * p.homingStrength * dt;
-        p.direction.y += (desired.y - p.direction.y) * p.homingStrength * dt;
-        float len = Vector2Length(p.direction);
-        if (len > 0)
-          p.direction = Vector2Scale(p.direction, 1.0f / len);
-      }
-    }
-  }
+void Reaper::Reset(Vector2 pos){
+    position=pos;hp=maxHp;energy=maxEnergy;velocity={0,0};
+    CancelAttack();pools.clear();leaves.clear();scythes.clear();echoes.clear();
+    qCooldown=eCooldown=ultCooldown=0;
 }
 
-void Reaper::CheckCollisions(Boss &boss) {
-  if (boss.isDead || boss.isDying || boss.IsInvulnerable())
-    return;
+void Reaper::HandleSkills(Boss& boss){
+    bool can=state==ReaperState::NORMAL&&!dashAtk.active&&eStunTimer<=0&&!isChargingHeavy;
 
-  // --- Combo (3 hits) ---
-  if (CheckComboCollision(boss)) {
-    float dmg = combo[comboStep].damage;
-    if (comboStep < 2) {
-      dmg *= rpg.DamageMultiplierPhysical();
-      lastDamageType = DamageType::PHYSICAL;
-    } else {
-      dmg *= rpg.DamageMultiplierMixed();
-      lastDamageType = DamageType::MIXED;
-    }
-    
-    boss.TakeDamage(dmg, comboStep == 2 ? 10.0f : 5.0f, {0, 0});
-    energy = fminf(maxEnergy, energy + 7.5f);
-
-    // Curacion si el enemigo esta sangrando
-    if (boss.isBleeding) {
-      hp = fminf(maxHp, hp + dmg * 0.12f);
-      Graphics::SpawnImpactBurst(position, {0, -1}, {255, 50, 50, 255}, {255, 100, 100, 255}, 5, 2);
+    // Q: Dash de Cortes
+    if(IsKeyPressed(controls.boomerang)&&can&&qCooldown<=0){
+        qCooldown=7.f;
+        Vector2 dir=Vector2Subtract(targetAim,position);
+        if(Vector2Length(dir)<1.f)dir=facing;else dir=Vector2Normalize(dir);
+        StartDashAttack(Vector2Add(position,Vector2Scale(dir,480.f)),false);
     }
 
-    // Hitstop y empuje (reducido 50%)
-    hitstopTimer = 0.08f;
-    velocity = Vector2Add(velocity, Vector2Scale(facing, 297.0f));
-
-    // Solo el ultimo ataque de la secuencia empujaba al boss (desactivado)
-    if (comboStep == 2) {
-      screenShake = fmaxf(screenShake, 1.8f); // Reducido (era 2.5) y usando fmaxf
+    // E: Sacrificio (espinas de sangre)
+    if(IsKeyPressed(controls.berserker)&&can&&eCooldown<=0){
+        eCooldown=3.5f;
+        if(!isAdminMode)hp-=15.f;
+        eStunTimer=0.35f;
+        pools.push_back({position,30.f});
     }
-  }
 
-  // --- Heavy Attack (Tajo frontal cargado) ---
-  if (CheckHeavyCollision(boss)) {
-    float dmg = 82.0f;
-    if (isPerfectCounter) {
-        energy = fminf(maxEnergy, energy + 30.0f);
-        isPerfectCounter = false;
-        Graphics::SpawnHolyCounterVFX(position);
-        Graphics::SpawnHolyImpactVFX(boss.position);
-        dmg *= 1.5f;
+    // R: Ejecucion (igual que Q pero mas)
+    if(IsKeyPressed(controls.ultimate)&&can&&ultCooldown<=0){
+        ultCooldown=18.f;
+        Vector2 dir=Vector2Subtract(targetAim,position);
+        if(Vector2Length(dir)<1.f)dir=facing;else dir=Vector2Normalize(dir);
+        StartDashAttack(Vector2Add(position,Vector2Scale(dir,650.f)),true);
     }
-    dmg *= rpg.DamageMultiplierMagical();
-    lastDamageType = DamageType::MAGICAL;
-    boss.TakeDamage(dmg, 60.0f, {0, 0});
-    energy = fminf(maxEnergy, energy + 12.5f);
-    hitstopTimer = 0.18f;
-    velocity = Vector2Add(velocity, Vector2Scale(facing, 420.0f));
-  }
+}
 
-  // --- Ground Bursts Q: colision hit-once con el boss ---
-  for (int i = 0; i < 5; i++) {
-    GroundBurst &gb = groundBursts[i];
-    if (!gb.active || gb.hasDealtDamage)
-      continue;
-    // Usando la misma logica radial isometrica que el cargado del mago pero siempre al radio maximo
-    if (CombatUtils::CheckProgressiveRadial(gb.position, boss.position, boss.radius, gb.radius, 1.0f)) {
-      gb.hasDealtDamage = true;
-      lastDamageType = DamageType::MAGICAL;
-      boss.TakeDamage(gb.damage * rpg.DamageMultiplierMagical(), 20.0f, {0, 0});
-      boss.ApplyBleed();
+void Reaper::CheckCollisions(Boss& boss){
+    if(boss.isDead||boss.isDying)return;
+
+    // Basicos 1 & 2 - NO incrementar comboStep aqui, ya se incrementa al clickar
+    if (state == ReaperState::ATTACKING && attackPhase == AttackPhase::ATTACK_ACTIVE && !hasHit) {
+        int step = comboStep > 0 ? comboStep - 1 : 0;
+        if (step == 0 || step == 1) {
+            float p = fmaxf(0.01f, 1.f - (attackPhaseTimer / 0.12f));
+            float sv = step == 0 ? -70.f : 70.f, sw = step == 0 ? 140.f : -140.f;
+            if (CombatUtils::CheckProgressiveSweep(position, facing, boss.position, boss.radius, 140.f, sv, sw, 1.f, p)) {
+                hasHit = true;
+                boss.TakeDamage(25.f * rpg.DamageMultiplierMixed(), 2.f, Vector2Scale(facing, 60.f));
+                Graphics::SpawnStyledBlood(boss.position, facing);
+            }
+        }
     }
-  }
 
-  // --- Orbes Homing E: colision con el boss ---
-  for (auto &p : activeProjectiles) {
-    if (!p.active || !p.isHoming)
-      continue;
-    if (CombatUtils::GetIsoDistance(p.position, boss.position) <= 14.0f + boss.radius) {
-      p.active = false;
-      lastDamageType = DamageType::MAGICAL;
-      boss.TakeDamage(24.0f * rpg.DamageMultiplierMagical(), 5.0f, {0, 0}); // Daño ajustado
+    // Scythes (3 & 4) - no incrementar comboStep
+    for (auto& s : scythes) {
+        if (!s.active) continue;
+        if (hitCooldownTimer <= 0 && CombatUtils::GetIsoDistance(s.position, boss.position) <= boss.radius + 40.f) {
+            hitCooldownTimer = 0.38f;
+            boss.TakeDamage(s.damage, 2.f, Vector2Scale(facing, 50.f));
+            Graphics::SpawnStyledBlood(boss.position, facing);
+        }
     }
-  }
 
-  // --- Ultimate Fase 2: Tajo Final AUTOMATICO → DoT Pop ---
-  if (CheckUltFinalSlash(boss)) {
-    float baseUltDmg = 160.0f * rpg.DamageMultiplierMagical(); // Daño masivo por consumir Ult
-    float popDmg = boss.GetRemainingBleedDamage();
-    float totalDmg = baseUltDmg + popDmg;
-
-    lastDamageType = DamageType::DoT;
-    boss.TakeDamage(totalDmg, 150.0f, {0, 0});
-    boss.bleedTimer = 0;
-    boss.isBleeding = false;
-
-    // La curación solo depende del sangrado detonado, no del daño base de 80
-    if (popDmg > 0) {
-      hp = fminf(maxHp, hp + popDmg);
+    // Heavy
+    if(state==ReaperState::HEAVY_ATTACK&&attackPhase==AttackPhase::ATTACK_ACTIVE&&!hasHit){
+        float p=1.f-(attackPhaseTimer/0.20f);
+        if(CombatUtils::CheckProgressiveSweep(position,facing,boss.position,boss.radius,130.f,-70.f,140.f,1.f,p)){
+            hasHit=true;boss.TakeDamage(55.f*rpg.DamageMultiplierMagical(),4.f,Vector2Scale(facing,120.f));
+            ApplyBleed(boss);Graphics::SpawnStyledBlood(boss.position,facing);
+        }
     }
-  }
+
+    // DashAttack hits (multiple per dash using hitCooldownTimer)
+    if(dashAtk.active&&hitCooldownTimer<=0&&CombatUtils::GetIsoDistance(position,boss.position)<=boss.radius+160.f){
+        hitCooldownTimer=0.09f;
+        float dmg=dashAtk.isUltimate?30.f:22.f;
+        dmg*=rpg.DamageMultiplierMagical();
+        boss.TakeDamage(dmg,0.4f,Vector2Scale(facing,30.f));
+        Graphics::SpawnStyledBlood(boss.position,facing);
+        if(boss.isBleeding)hp=fminf(hp+dmg*0.2f,maxHp);
+        // On first R hit: launch leaves from pools
+        if(dashAtk.isUltimate&&!dashAtk.hitEnemy){
+            dashAtk.hitEnemy=true;
+            ApplyBleed(boss);screenShake=1.f;
+            for(auto& pl:pools)if(pl.lifetime>0){
+                Vector2 d=Vector2Normalize(Vector2Subtract(boss.position,pl.position));
+                leaves.push_back({pl.position,Vector2Scale(d,920.f),25.f*rpg.DamageMultiplierMagical(),true});
+                Graphics::SpawnSonicBoom(pl.position,60.f);pl.lifetime=0;
+            }
+        }
+    }
+
+    // E explosion
+    if(eExplosionReady){
+        eExplosionReady=false;
+        if(CombatUtils::GetIsoDistance(position,boss.position)<=boss.radius+210.f){
+            boss.TakeDamage(28.f*rpg.DamageMultiplierMagical(),3.f,Vector2Normalize(Vector2Subtract(boss.position,position)));
+            ApplyBleed(boss);
+        }
+    }
+
+    // Blood leaves
+    for(auto& l:leaves){
+        if(!l.active)continue;
+        if(CombatUtils::GetIsoDistance(l.position,boss.position)<=boss.radius+12.f){
+            l.active=false;boss.TakeDamage(l.damage,1.f,{0,0});
+            Graphics::SpawnStyledBlood(boss.position,Vector2Normalize(l.velocity));
+        }
+    }
 }
 
 std::vector<AbilityInfo> Reaper::GetAbilities() const {
-  std::vector<AbilityInfo> abs;
-  float currentDashCD =
-      (dashCooldown1 > 0 && dashCooldown2 > 0)
-          ? fminf(dashCooldown1, dashCooldown2)
-          : ((dashCooldown1 > 0) ? dashCooldown1 : dashCooldown2);
-  abs.push_back({TextFormat("DASH [%d]", dashCharges),
-                 currentDashCD,
-                 dashMaxCD,
-                 0.0f,
-                 CanDash(),
-                 {180, 0, 255, 255},
-                 ResourceManager::texBoomerang /* Placeholder for Dash */});
-  abs.push_back({"Q Sangre",
-                 qCooldown,
-                 7.2f,
-                 18.0f,
-                 qCooldown <= 0 && energy >= 18.0f,
-                 {220, 0, 255, 255},
-                 ResourceManager::reaperQ});
-  abs.push_back({"E Orbes",
-                 eCooldown,
-                 5.0f,
-                 20.0f,
-                 eCooldown <= 0 && energy >= 20.0f,
-                 {255, 60, 255, 255},
-                 ResourceManager::reaperE});
-  abs.push_back({"R Ult",
-                 ultCooldown,
-                 22.5f,
-                 58.0f,
-                 ultCooldown <= 0 && energy >= 58.0f,
-                 {0, 200, 255, 255},
-                 ResourceManager::reaperR});
-  return abs;
-}
-
-std::string Reaper::GetSpecialStatus() const {
-  if (state == ReaperState::LOCKED && ultSeqPhase == 1)
-    return "<<< TIEMPO DETENIDO >>>";
-  if (state == ReaperState::LOCKED && ultSeqPhase == 2)
-    return "[ TAJO FINAL ]";
-  if (qActive)
-    return TextFormat("SANGRE [%d/5]", qBurstsSpawned);
-  return "";
-}
-
-// =====================================================
-// REAPER - START GROUND BURST CHAIN (Habilidad Q)
-// =====================================================
-void Reaper::StartGroundBurstChain() {
-  qActive = true;
-  qBurstsSpawned = 0;
-  qBurstTimer = 0.0f; // El primero aparece inmediatamente
-  qBurstOrigin = position;
-  qBurstDir = facing;
-  // Resetear todos
-  for (int i = 0; i < 5; i++)
-    groundBursts[i].active = false;
-}
-
-// =====================================================
-// REAPER - PROGRESSIVE SWEEP SYSTEM
-// =====================================================
-// [Moved to top for scope visibility]
-
-// =====================================================
-// REAPER - CHECK COMBO COLLISION
-// Logica progresiva: el golpe solo conecta cuando el
-// 'filo' del tajo alcanza el angulo del enemigo.
-// =====================================================
-bool Reaper::CheckComboCollision(Boss &boss) {
-  if (state != ReaperState::ATTACKING ||
-      attackPhase != AttackPhase::ATTACK_ACTIVE)
-    return false;
-  if (hitCooldownTimer > 0.0f)
-    return false;
-
-  // --- Distancia isometrica al boss ---
-  Vector2 diff  = Vector2Subtract(boss.position, position);
-  float   isoY  = diff.y * 2.0f;  // comprimir Y x2 para perspectiva iso
-  float   isoDist = sqrtf(diff.x * diff.x + isoY * isoY);
-  float   totalRange = combo[comboStep].range + boss.radius;
-  if (isoDist >= totalRange) return false; // fuera de alcance
-
-  // --- Progreso del barrido en este frame ---
-  float attackMult = isBuffed ? 0.65f : 1.0f;
-  float activeTotal = combo[comboStep].active * attackMult;
-  float progress    = CombatUtils::GetProgress(attackPhaseTimer, activeTotal) * 1.4f;
-  if (progress > 1.0f) progress = 1.0f;
-
-  SweepParams sp = GetSweepParams(comboStep);
-
-  if (CombatUtils::CheckProgressiveSweep(position, facing, boss.position, boss.radius, 
-                                         combo[comboStep].range, sp.startOffset, sp.totalDeg, sp.dir, progress)) {
-    hitCooldownTimer = combo[comboStep].hitCooldown;
-    hasHit = true;
-    return true;
-  }
-  return false;
-}
-
-// =====================================================
-// REAPER - CHECK HEAVY COLLISION (Tajo frontal)
-// =====================================================
-bool Reaper::CheckHeavyCollision(Boss &boss) {
-  if (state != ReaperState::HEAVY_ATTACK ||
-      attackPhase != AttackPhase::ATTACK_ACTIVE)
-    return false;
-  if (heavyHasHit)
-    return false;
-
-  // Tajo frontal cargado: barrido de 80 grados
-  float progress = CombatUtils::GetProgress(attackPhaseTimer, 0.20f) * 1.4f;
-  if (progress > 1.0f) progress = 1.0f;
-  if (CombatUtils::CheckProgressiveSweep(position, facing, boss.position, boss.radius, 200.0f, -40.0f, 80.0f, 1.0f, progress)) {
-    heavyHasHit = true;
-    return true;
-  }
-  return false;
-}
-
-// =====================================================
-// REAPER - CHECK ULT FINAL SLASH
-// =====================================================
-bool Reaper::CheckUltFinalSlash(Boss &boss) {
-  if (state != ReaperState::LOCKED || ultSeqPhase != 2)
-    return false;
-  if (attackPhase != AttackPhase::ATTACK_ACTIVE)
-    return false;
-  if (ultFinalSlashHit)
-    return false;
-
-  float progress = CombatUtils::GetProgress(attackPhaseTimer, 0.25f) * 1.4f;
-  if (progress > 1.0f) progress = 1.0f;
-  // El tajo final es un barrido de 200° centrado en facing (de -100 a +100)
-  if (CombatUtils::CheckProgressiveSweep(position, facing, boss.position, boss.radius, 253.0f, -100.0f, 200.0f, 1.0f, progress)) {
-    ultFinalSlashHit = true;
-    return true;
-  }
-  return false;
-}
-
-// =====================================================
-// REAPER - LAUNCH HOMING ORBS (Habilidad E)
-// =====================================================
-void Reaper::LaunchHomingOrbs(Boss &boss) {
-  float orbSpeed = 650.0f; // Aumentado un poco solamente (antes 500.0f)
-
-  if (boss.isBleeding) {
-    // Lanzamiento en cono dirigido si el boss ya sangra (5 orbes en ~56 grados
-    // total)
-    for (int i = 0; i < 5; i++) {
-      float spreadAngle = ((float)i - 2.0f) * 28.0f;
-      float baseAngle = atan2f(facing.y, facing.x) * RAD2DEG + spreadAngle;
-      float rad = baseAngle * DEG2RAD;
-      Vector2 dir = {cosf(rad), sinf(rad)};
-
-      Projectile orb = {};
-      orb.position = position;
-      orb.startPos = position;
-      orb.direction = dir;
-      orb.maxDistance = 1500.0f;
-      orb.active = true;
-      orb.damage = 16.8f; // +20% adicional
-      orb.isHoming = true;
-      orb.homingStrength = 3.5f;
-      orb.speed = orbSpeed;
-
-      activeProjectiles.push_back(orb);
-    }
-  } else {
-    // Si no hay sangrado, se dispersan en un angulo de 180 hacia delante
-    const int numOrbs = 5;
-    for (int i = 0; i < numOrbs; i++) {
-      // De -90 a 90 grados respecto al facing
-      float spreadAngle = ((float)i - 2.0f) * 45.0f;
-      float baseAngle = atan2f(facing.y, facing.x) * RAD2DEG + spreadAngle;
-      float rad = baseAngle * DEG2RAD;
-      Vector2 dir = {cosf(rad), sinf(rad)};
-
-      Projectile orb = {};
-      orb.position = position;
-      orb.startPos = position;
-      orb.direction = dir;
-      orb.maxDistance = 1500.0f;
-      orb.active = true;
-      orb.damage = 16.8f;
-      orb.isHoming = true;
-      orb.homingStrength = 3.5f;
-      orb.speed = orbSpeed;
-
-      activeProjectiles.push_back(orb);
-    }
-  }
-}
-
-// =====================================================
-// REAPER - ACTIVATE ULTIMATE
-// Recibe la posicion actual del boss para posicionar
-// las sombras correctamente en forma de X.
-// =====================================================
-void Reaper::ActivateUltimate(Vector2 bossPos) {
-  state = ReaperState::LOCKED;
-  isTimeStopped = true;
-  ultSeqTimer = 1.8f; // Duracion de la fase de sombras
-  ultSeqPhase = 1;
-  ultFinalSlash = false;
-  ultFinalSlashHit = false;
-
-  // Limpiar sombras previas
-  for (int i = 0; i < 2; i++)
-    ultShadows[i].active = false;
-
-  // Calcular la X: dos sombras que flanquean al jefe y cruzan en X
-  Vector2 toEnemy = Vector2Subtract(bossPos, position);
-  float dist = CombatUtils::GetIsoDistance(position, bossPos);
-  if (dist < 1.0f) {
-    toEnemy = facing;
-    dist = 1.0f;
-  }
-  Vector2 dirFwd = Vector2Normalize(toEnemy);
-  Vector2 dirPerp = {-dirFwd.y, dirFwd.x}; // perpendicular
-
-  float offset = 350.0f; // distancia de separacion en cada eje
-
-  // Sombra 0: esquina superior-izquierda a esquina inferior-derecha (hacia el
-  // boss)
-  Vector2 corner0 =
-      Vector2Add(Vector2Scale(dirFwd, -offset), Vector2Scale(dirPerp, offset));
-  ultShadows[0].position = Vector2Add(bossPos, corner0);
-  ultShadows[0].velocity = Vector2Scale(Vector2Normalize(corner0), -2800.0f);
-  ultShadows[0].lifetime = 0.35f;
-  ultShadows[0].active = true;
-
-  // Sombra 1: esquina superior-derecha a esquina inferior-izquierda
-  Vector2 corner1 =
-      Vector2Add(Vector2Scale(dirFwd, -offset), Vector2Scale(dirPerp, -offset));
-  ultShadows[1].position = Vector2Add(bossPos, corner1);
-  ultShadows[1].velocity = Vector2Scale(Vector2Normalize(corner1), -2800.0f);
-  ultShadows[1].lifetime = 0.35f;
-  ultShadows[1].active = true;
-
-  // Orientar el facing del Reaper hacia el boss para el tajo final
-  if (dist > 1.0f)
-    facing = dirFwd;
-}
-
-// =====================================================
-// REAPER - DRAW
-// =====================================================
-void Reaper::Draw() {
-  float t = (float)g_gameTime;
-
-  // --- Ground Bursts (Q) en el suelo ---
-  for (int i = 0; i < 5; i++)
-    groundBursts[i].Draw();
-
-  // --- Sombras de la Ultimate ---
-  for (int i = 0; i < 2; i++) {
-    if (!ultShadows[i].active)
-      continue;
-    float alpha = ultShadows[i].lifetime * 3.0f;
-    if (alpha > 1.0f)
-      alpha = 1.0f;
-    DrawCircleV(ultShadows[i].position, 24.0f, Fade({0, 200, 255, 255}, alpha));
-    DrawCircleLines((int)ultShadows[i].position.x,
-                    (int)ultShadows[i].position.y, 28.0f,
-                    Fade(WHITE, alpha * 0.8f));
-    // Estela
-    DrawCircleV(
-        Vector2Add(
-            ultShadows[i].position,
-            Vector2Scale(Vector2Normalize(ultShadows[i].velocity), -35.0f)),
-        16.0f, Fade({0, 150, 255, 255}, alpha * 0.4f));
-  }
-
-  // --- Sombra proyectada se maneja en GameplayScene ---
-  // DrawEllipse((int)position.x, (int)position.y, radius, radius * 0.5f,
-  // Fade(BLACK, 0.4f));
-
-  // --- Aura vampirica ---
-  float auraPulse = 0.3f + 0.15f * sinf(t * 3.5f);
-  if (isBuffed) {
-    DrawCircleGradient((int)position.x, (int)position.y - 20, radius * 2.8f,
-                       Fade({220, 0, 255, 255}, auraPulse),
-                       Fade({80, 0, 120, 255}, 0));
-  } else {
-    DrawCircleGradient((int)position.x, (int)position.y - 20, radius * 1.6f,
-                       Fade({160, 0, 220, 200}, auraPulse * 0.6f),
-                       Fade({80, 0, 120, 255}, 0));
-  }
-
-  // --- Cuerpo del Segador ---
-  Color reaperColor;
-  if (hitFlashTimer > 0)
-    reaperColor = WHITE;
-  else if (ultSeqPhase == 1 || ultSeqPhase == 2)
-    reaperColor = {0, 200, 255, 255}; // Cyan Ult
-  else if (isBuffed)
-    reaperColor = {230, 50, 255, 255};
-  else
-    reaperColor = {160, 0, 220, 255};
-
-  // --- Indicador de dirección (Hades-style 8-way) ---
-  Vector2 snapped = Directions::GetSnappedVector(facing);
-  
-  // Anillo de base
-  DrawCircleLines((int)position.x, (int)position.y - 20, radius + 5, Fade(reaperColor, 0.3f));
-  
-  // Puntero 8-way
-  Vector2 pointerPos = Vector2Add({position.x, position.y - 20}, Vector2Scale(snapped, radius + 11.0f));
-  DrawCircleV(pointerPos, 4.0f, WHITE);
-
-  DrawCircleV({position.x, position.y - 20}, radius, reaperColor);
-  DrawCircleLines((int)position.x, (int)position.y - 20, radius, GREEN);
-
-  // === Visual del Combo: sector progresivo ===================================
-  // El sector CRECE en tiempo real conforme la animacion avanza,
-  // mostrando exactamente que region ya ha sido barrida por el filo.
-  if (state == ReaperState::ATTACKING) {
-    float attackMult  = isBuffed ? 0.65f : 1.0f;
-    float range       = combo[comboStep].range;
-    float facingAngle = atan2f(facing.y * 2.0f, facing.x) * RAD2DEG;
-    Color comboCol    = isBuffed ? Color{255, 140, 0, 255} : Color{200, 0, 255, 255};
-
-    if (attackPhase == AttackPhase::STARTUP) {
-      // Indicador anticipatorio: sectorcito pequeno donde comenzara el tajo
-      SweepParams sp = GetSweepParams(comboStep);
-      float startA   = facingAngle + sp.startOffset;
-      float previewA = startA + sp.dir * 25.0f; // solo 25 grados de preview
-      rlPushMatrix();
-      rlTranslatef(position.x, position.y, 0);
-      rlScalef(1.0f, 0.5f, 1.0f);
-      DrawCircleSector({0,0}, range * 0.55f,
-                       fminf(startA, previewA), fmaxf(startA, previewA),
-                       12, Fade(comboCol, 0.18f));
-      rlPopMatrix();
-    } else if (attackPhase == AttackPhase::ATTACK_ACTIVE) {
-      // ── PROGRESIVO: sector crece desde startAngle hasta leadingAngle ──
-      float activeTotal = combo[comboStep].active * attackMult;
-      float progress    = CombatUtils::GetProgress(attackPhaseTimer, activeTotal);
-
-      if (comboStep == 2) {
-        // Hit 3: spin 360 – el circulo se rellena completamente
-        float coveredDeg = 360.0f * progress;
-        rlPushMatrix();
-        rlTranslatef(position.x, position.y, 0);
-        rlScalef(1.0f, 0.5f, 1.0f);
-        DrawCircleSector({0,0}, range, facingAngle, facingAngle + coveredDeg,
-                         36, Fade(comboCol, 0.55f));
-        // Borde del arco ya cubierto
-        DrawCircleSectorLines({0,0}, range, facingAngle,
-                              facingAngle + coveredDeg, 36, Fade(WHITE, 0.5f));
-        // Filo (leading edge)
-        float le = (facingAngle + coveredDeg) * DEG2RAD;
-        DrawLineEx({0,0}, {cosf(le)*range, sinf(le)*range},
-                   3.0f, WHITE);
-        rlPopMatrix();
-      } else {
-        // Hits 1 y 2: sector que barre de un lado al otro
-        SweepParams sp   = GetSweepParams(comboStep);
-        float coveredDeg = sp.totalDeg * progress;
-        float startA     = facingAngle + sp.startOffset;
-        float endA       = startA + sp.dir * coveredDeg;
-        float secMin     = fminf(startA, endA);
-        float secMax     = fmaxf(startA, endA);
-
-        rlPushMatrix();
-        rlTranslatef(position.x, position.y, 0);
-        rlScalef(1.0f, 0.5f, 1.0f);
-
-        // Fill region ya barrida
-        DrawCircleSector({0,0}, range, secMin, secMax,
-                         24, Fade(comboCol, 0.55f));
-
-        // Borde exterior del area cubierta
-        DrawCircleSectorLines({0,0}, range, secMin, secMax,
-                              24, Fade(WHITE, 0.45f));
-
-        // Filo (leading edge): linea brillante en el angulo actual del tajo
-        float leRad = endA * DEG2RAD;
-        DrawLineEx({0,0}, {cosf(leRad)*range, sinf(leRad)*range},
-                   3.5f, WHITE);
-        // Destello en la punta del filo
-        DrawCircleV({cosf(leRad)*range, sinf(leRad)*range},
-                    5.0f, Fade(WHITE, 0.9f));
-
-        rlPopMatrix();
-      }
-    } else { // RECOVERY: muestra el area cubierta desvanecida
-      SweepParams sp = GetSweepParams(comboStep);
-      float startA   = facingAngle + sp.startOffset;
-      float endA     = startA + sp.dir * sp.totalDeg;
-      float secMin   = fminf(startA, endA);
-      float secMax   = fmaxf(startA, endA);
-      if (comboStep == 2) { secMin = facingAngle; secMax = facingAngle + 360.0f; }
-      rlPushMatrix();
-      rlTranslatef(position.x, position.y, 0);
-      rlScalef(1.0f, 0.5f, 1.0f);
-      DrawCircleSector({0,0}, range, secMin, secMax,
-                       24, Fade(comboCol, 0.12f));
-      rlPopMatrix();
-    }
-  }
-
-  // --- Visual del Heavy Attack / Ult Final Slash ---
-  bool isUltSlash =
-      (state == ReaperState::LOCKED && ultSeqPhase == 2 && ultFinalSlash);
-  if (state == ReaperState::HEAVY_ATTACK || isUltSlash) {
-    float slashAngle = atan2f(facing.y * 2.0f, facing.x) * RAD2DEG;
-    float halfW = isUltSlash ? 100.0f : 40.0f; // Ult slash mas ancho
-    float slashRange = isUltSlash ? 253.0f : 200.0f;
-    Color slashCol =
-        isUltSlash ? Color{0, 220, 255, 255} : Color{255, 50, 200, 255};
-    float maxTotalTime = isUltSlash ? 0.25f : 0.20f;
-
-    rlPushMatrix();
-    rlTranslatef(position.x, position.y, 0);
-    rlScalef(1.0f, 0.5f, 1.0f);
-
-    if (attackPhase == AttackPhase::STARTUP) {
-        // Area hint
-        DrawCircleSector({0, 0}, slashRange * 0.55f, slashAngle - halfW, slashAngle + halfW, 24, Fade(slashCol, 0.18f));
-    } else if (attackPhase == AttackPhase::ATTACK_ACTIVE) {
-        float progressArr = CombatUtils::GetProgress(attackPhaseTimer, maxTotalTime) * 1.4f;
-        if (progressArr > 1.0f) progressArr = 1.0f;
-        float coveredDeg = (halfW * 2.0f) * progressArr;
-        
-        float startA = slashAngle - halfW;
-        float currentA = startA + coveredDeg;
-
-        DrawCircleSector({0,0}, slashRange, startA, currentA, 36, Fade(slashCol, 0.55f));
-        DrawCircleSectorLines({0,0}, slashRange, startA, currentA, 36, Fade(WHITE, 0.5f));
-        
-        // Leading edge (manecilla)
-        float le = currentA * DEG2RAD;
-        DrawLineEx({0,0}, {cosf(le)*slashRange, sinf(le)*slashRange}, 4.0f, WHITE);
-        // Destello en la punta
-        DrawCircleV({cosf(le)*slashRange, sinf(le)*slashRange}, 6.0f, Fade(WHITE, 0.9f));
-
-    } else if (attackPhase == AttackPhase::RECOVERY) {
-        // Fade out del area total afectada
-        DrawCircleSector({0, 0}, slashRange, slashAngle - halfW, slashAngle + halfW, 24, Fade(slashCol, 0.12f));
-    }
-    rlPopMatrix();
-  }
-
-  // --- VFX: Perfect Dodge Glow ---
-  if (hasPerfectDodgeBuff) {
-    float pulse = 0.5f + 0.5f * sinf(t * 15.0f);
-    DrawCircleGradient((int)position.x, (int)position.y - 20, radius * 3.5f,
-                        Fade(GOLD, 0.4f * pulse), Fade(GOLD, 0));
-    DrawCircleLinesV({position.x, position.y - 20}, radius + 5.0f + 5.0f * pulse, Fade(GOLD, 0.8f));
-  }
-
-  // --- Visual de Carga (Hold Click) ---
-  if (isCharging && holdTimer > 0) {
-    float chargePct = fminf(holdTimer / 0.35f, 1.0f);
-    DrawCircleLines((int)position.x, (int)position.y - 20,
-                    radius + 8.0f + 20.0f * (1.0f - chargePct),
-                    Fade({200, 0, 255, 255}, chargePct));
-    DrawCircleGradient(
-        (int)position.x, (int)position.y - 20, radius * 2.0f * chargePct,
-        Fade({200, 0, 255, 160}, 0.5f), Fade({200, 0, 255, 255}, 0));
-    if (chargePct >= 1.0f) {
-      float blink = sinf(t * 30.0f);
-      if (blink > 0)
-        DrawCircleLines((int)position.x, (int)position.y - 20, radius + 12,
-                        WHITE);
-    }
-  }
-
-  // --- Visual Blink ---
-  if (state == ReaperState::DASHING) {
-    DrawCircleGradient((int)position.x, (int)position.y - 20, radius * 2.5f,
-                       Fade({200, 0, 255, 255}, 0.4f),
-                       Fade({200, 0, 255, 255}, 0));
-  }
-
-  // --- Orbes homing activos ---
-  for (auto &p : activeProjectiles) {
-    if (!p.active)
-      continue;
-    
-    float pRad = p.isShadow ? 8.0f : (p.isHoming ? 15.0f : 12.0f);
-    
-    // Colores de Fuego Fatuo (Will-o-the-wisp)
-    Color haloCol = p.isShadow ? Color{0, 180, 255, 255} : Color{255, 0, 255, 255};
-    Color coreCol = p.isShadow ? Color{0, 20, 60, 255} : Color{40, 0, 60, 255};
-    if (p.isHoming) {
-        haloCol = Color{255, 120, 255, 255}; // Mas vibrante para homing
-    }
-
-    // 1. Halo brillante exterior
-    DrawCircleV(p.position, pRad + 3.0f * sinf(t * 12.0f), Fade(haloCol, 0.45f));
-    DrawCircleGradient((int)p.position.x, (int)p.position.y, pRad * 2.5f, Fade(haloCol, 0.3f), Fade(haloCol, 0));
-    
-    // 2. Nucleo oscuro (Estilo "Anime High Contrast")
-    DrawCircleV(p.position, pRad * 0.75f, coreCol);
-    
-    // 3. Brillo central pequeño
-    DrawCircleV(p.position, pRad * 0.25f, WHITE);
-
-    // 4. Trail de Particulas Espectrales
-    if (GetRandomValue(0, 100) < 35) {
-        Graphics::VFXSystem::GetInstance().SpawnFull(
-            p.position, Vector2Scale(p.direction, -p.speed * 0.2f), 0.5f,
-            Fade(haloCol, 0.8f), {40,0,80,0}, 2.0f, Graphics::RenderType::CIRCLE,
-            BLEND_ADDITIVE, 0, 0.92f, 0, 0, false
-        );
-    }
-  }
+    return {
+        {"Dash",dashCooldown1,dashMaxCD,(float)dashCharges,dashCharges>0,{200,200,200,255},{}},
+        {"Q: Cosecha",qCooldown,7.f,0,qCooldown<=0,{160,0,255,255},{}},
+        {"E: Sacrificio",eCooldown,3.5f,0,eCooldown<=0,{200,0,60,255},{}},
+        {"R: Ejecucion",ultCooldown,18.f,0,ultCooldown<=0,{220,0,30,255},{}},
+    };
 }

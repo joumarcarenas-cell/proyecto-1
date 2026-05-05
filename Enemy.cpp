@@ -8,8 +8,8 @@
 //   Enemy::Draw             <- primitivas + telegrafos de ataque + rocas
 // =====================================================================
 
-#include "include/DirectionUtils.h"
 #include "entities.h"
+#include "include/DirectionUtils.h"
 #include "include/graphics/VFXSystem.h"
 #include "raylib.h"
 #include "raymath.h"
@@ -148,8 +148,11 @@ void Enemy::UpdateAI(Player &player) {
         Vector2 diff = Vector2Subtract(player.position, rocks[i].position);
         float isoY = diff.y * 2.0f;
         if (sqrtf(diff.x * diff.x + isoY * isoY) < 60.0f + player.radius) {
-          player.TakeDamage(15.0f, {0, 0}); // Dano de la roca reducido para evitar one-shots en ráfaga
-          player.slowTimer = 1.0f;          // Ralentiza un poco al golpear
+          player.TakeDamage(
+              15.0f,
+              {0,
+               0}); // Dano de la roca reducido para evitar one-shots en ráfaga
+          player.slowTimer = 1.0f; // Ralentiza un poco al golpear
         }
       }
     }
@@ -539,8 +542,7 @@ void Enemy::UpdateAI(Player &player) {
       if (CombatUtils::CheckProgressiveRadial(position, player.position,
                                               player.radius, 300.0f, 1.0f)) {
         Vector2 diff = Vector2Subtract(player.position, position);
-        player.TakeDamage(50.0f,
-                          Vector2Scale(Vector2Normalize(diff), 2800.0f));
+        player.TakeDamage(50.0f, Vector2Scale(Vector2Normalize(diff), 2800.0f));
       }
       // Explosion de impacto al aterrizar
       for (int i = 0; i < 30; i++)
@@ -838,15 +840,17 @@ void Enemy::Update() {
     if (recentDamageTimer <= 0)
       recentDamage = 0;
   }
-  
+
   // Regen de Poise
   if (poiseRegenTimer > 0) {
-      poiseRegenTimer -= GetFrameTime() * g_timeScale;
+    poiseRegenTimer -= GetFrameTime() * g_timeScale;
   } else {
-      if (poiseCurrent < poiseMax) {
-          poiseCurrent += (poiseMax * 0.1f) * (GetFrameTime() * g_timeScale); // 10s back to full
-          if (poiseCurrent > poiseMax) poiseCurrent = poiseMax;
-      }
+    if (poiseCurrent < poiseMax) {
+      poiseCurrent += (poiseMax * 0.1f) *
+                      (GetFrameTime() * g_timeScale); // 10s back to full
+      if (poiseCurrent > poiseMax)
+        poiseCurrent = poiseMax;
+    }
   }
 
   Vector2 next = Vector2Add(
@@ -959,29 +963,36 @@ void Enemy::Draw() {
       currentFrame = startFrame + (int)(prog * (endFrame - startFrame + 1));
     }
 
-      if (totalFrames > 0)
-        currentFrame = currentFrame % totalFrames;
-      
-      // [NEW] Dibujado del Sprite del Golem
-      Rectangle src = {(float)currentFrame * (ResourceManager::texEnemy.width / totalFrames), 0, (float)ResourceManager::texEnemy.width / totalFrames, (float)ResourceManager::texEnemy.height};
-      Rectangle dest = {position.x, position.y - 30.0f - jumpH, radius * 4.5f, radius * 4.5f}; // Escalado para el boss
-      Vector2 origin = {dest.width / 2.0f, dest.height / 1.1f}; // Ajuste de pivote a los pies
-      
-      DrawTexturePro(ResourceManager::texEnemy, src, dest, origin, 0.0f, tint);
+    if (totalFrames > 0)
+      currentFrame = currentFrame % totalFrames;
 
-    } else {
-        // Fallback: Primitive-based rendering for all enemies
-        Vector2 snapped = Directions::GetSnappedVector(facing);
-        
-        // Anillo de base
-        DrawCircleLines((int)position.x, (int)position.y - 30.0f - jumpH, radius + 8, Fade(RED, 0.4f));
-        
-        // Puntero 8-way
-        Vector2 pointerPos = Vector2Add({position.x, position.y - 30.0f - jumpH}, Vector2Scale(snapped, radius + 15.0f));
-        DrawCircleV(pointerPos, 5.0f, WHITE);
+    // [NEW] Dibujado del Sprite del Golem
+    Rectangle src = {(float)currentFrame *
+                         (ResourceManager::texEnemy.width / totalFrames),
+                     0, (float)ResourceManager::texEnemy.width / totalFrames,
+                     (float)ResourceManager::texEnemy.height};
+    Rectangle dest = {position.x, position.y - 30.0f - jumpH, radius * 4.5f,
+                      radius * 4.5f}; // Escalado para el boss
+    Vector2 origin = {dest.width / 2.0f,
+                      dest.height / 1.1f}; // Ajuste de pivote a los pies
 
-        DrawCircleV({position.x, position.y - 30.0f - jumpH}, radius, color);
-    }
+    DrawTexturePro(ResourceManager::texEnemy, src, dest, origin, 0.0f, tint);
+
+  } else {
+    // Fallback: Primitive-based rendering for all enemies
+    Vector2 snapped = Directions::GetSnappedVector(facing);
+
+    // Anillo de base
+    DrawCircleLines((int)position.x, (int)position.y - 30.0f - jumpH,
+                    radius + 8, Fade(RED, 0.4f));
+
+    // Puntero 8-way
+    Vector2 pointerPos = Vector2Add({position.x, position.y - 30.0f - jumpH},
+                                    Vector2Scale(snapped, radius + 15.0f));
+    DrawCircleV(pointerPos, 5.0f, WHITE);
+
+    DrawCircleV({position.x, position.y - 30.0f - jumpH}, radius, color);
+  }
 
   // ── Indicadores de telegrafos de ataque ──────────────────────────
   if (aiState == AIState::ATTACK_SLAM && attackPhaseTimer > 0) {
@@ -1214,23 +1225,25 @@ void Enemy::Draw() {
 }
 
 void Enemy::TakeDamage(float dmg, float poiseDmg, Vector2 pushVel) {
-  if (isDead || isDying || IsInvulnerable()) return;
-  
-  if (!desperationResists && aiState != AIState::DESPERATION_ACTIVE && aiState != AIState::AVALANCHE_ACTIVE) {
-      if (aiState != AIState::STAGGERED) {
-          poiseCurrent -= poiseDmg;
-          poiseRegenTimer = 5.0f; // 5 seconds before regen starts
-          
-          if (poiseCurrent <= 0) {
-              poiseCurrent = poiseMax;
-              aiState = AIState::STAGGERED;
-              stateTimer = 1.5f;
-              attackPhaseTimer = 0.0f;
-              // VFX for posture break
-              Graphics::SpawnImpactBurst(position, {0, -1}, GOLD, WHITE, 25, 10);
-              screenShake = fmaxf(screenShake, 3.0f);
-          }
+  if (isDead || isDying || IsInvulnerable())
+    return;
+
+  if (!desperationResists && aiState != AIState::DESPERATION_ACTIVE &&
+      aiState != AIState::AVALANCHE_ACTIVE) {
+    if (aiState != AIState::STAGGERED) {
+      poiseCurrent -= poiseDmg;
+      poiseRegenTimer = 5.0f; // 5 seconds before regen starts
+
+      if (poiseCurrent <= 0) {
+        poiseCurrent = poiseMax;
+        aiState = AIState::STAGGERED;
+        stateTimer = 1.5f;
+        attackPhaseTimer = 0.0f;
+        // VFX for posture break
+        Graphics::SpawnImpactBurst(position, {0, -1}, GOLD, WHITE, 25, 10);
+        screenShake = fmaxf(screenShake, 3.0f);
       }
+    }
   }
 
   hp -= dmg;
